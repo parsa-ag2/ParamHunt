@@ -20,7 +20,7 @@ A Chrome extension for browser-based security research: it **discovers and catal
 - **Persistence** — findings survive browser restarts (local browser storage, deduplicated).
 - **Manual rescan** — collect from dynamically added forms/fields on demand.
 
-## Installation (no Node.js, no npm, no terminal)
+## Installation 
 
 The repository ships a **ready-to-load extension folder** (`chrome/`), which contains the compiled extension (`manifest.json` at its root).
 
