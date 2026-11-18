@@ -1,0 +1,6 @@
+<!doctype html><html><body>
+<script>
+  axios.get("/x", { params: { is_admin: true, role: "user", filter_type: "all" } });
+  window.history.pushState({}, "", "/spa/route?spa_param=7");
+</script>
+</body></html>

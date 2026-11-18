@@ -4,7 +4,9 @@ import { sendRequest } from '@core/messaging/bridge';
 import { paramName, namesToClipboardText, uniqueParamNames } from '@modules/param-discovery/lib/format';
 import { Badge, Chip, CopyButton, Empty, Toast, useCopyFlash } from '../ui';
 
-const SOURCE_FILTERS = ['all', 'url', 'dom', 'form', 'js', 'network'] as const;
+const SOURCE_FILTERS = ['all', 'url', 'dom', 'form', 'js', 'network', 'cookie', 'storage'] as const;
+const METHOD_FILTERS = ['all', 'GET', 'POST', 'none'] as const;
+const CONF_FILTERS = ['all', 'high', 'medium', 'low'] as const;
 const MAX_RENDER_ROWS = 300;
 
 /** Parameter Explorer — search/filter/sort/select/copy/inspect/note. */
@@ -19,11 +21,14 @@ export default function ParametersTab({
 }) {
   const [filter, setFilter] = useState('');
   const [source, setSource] = useState<(typeof SOURCE_FILTERS)[number]>('all');
+  const [methodF, setMethodF] = useState<(typeof METHOD_FILTERS)[number]>('all');
+  const [confF, setConfF] = useState<(typeof CONF_FILTERS)[number]>('all');
   const [sort, setSort] = useState<'recent' | 'occurrences' | 'name'>('recent');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [flash, copyError, doCopy] = useCopyFlash();
 
+  const items = page?.items ?? [];
   const rows = useMemo(() => {
     let out = page?.items ?? [];
     if (source !== 'all') {
@@ -31,6 +36,15 @@ export default function ParametersTab({
         const sources = (f.detail as Record<string, unknown>)?.sources as Record<string, number> | undefined;
         return sources ? Object.keys(sources).includes(source) : false;
       });
+    }
+    if (methodF !== 'all') {
+      out = out.filter((f) => {
+        const methods = (f.detail as Record<string, unknown>)?.methods as string[] | undefined;
+        return methodF === 'none' ? !methods || methods.length === 0 : (methods ?? []).includes(methodF);
+      });
+    }
+    if (confF !== 'all') {
+      out = out.filter((f) => ((f.detail as Record<string, unknown>)?.confidence ?? 'low') === confF);
     }
     const needle = filter.trim().toLowerCase();
     if (needle) out = out.filter((f) => paramName(f).toLowerCase().includes(needle));
@@ -46,6 +60,21 @@ export default function ParametersTab({
   const copyAll = () => doCopy(namesToClipboardText(allNames), '__all__');
   const copySelected = () =>
     doCopy(namesToClipboardText(uniqueParamNames(rows.filter((f) => selected.has(f.id)))), '__sel__');
+  const copyFiltered = () => doCopy(namesToClipboardText(uniqueParamNames(rows)), '__filtered__');
+  const selectAll = () => setSelected(new Set(items.map((f) => f.id)));
+  const selectFiltered = () => setSelected((prev) => new Set([...prev, ...rows.map((f) => f.id)]));
+  const deselectAll = () => setSelected(new Set());
+  const invertSelection = () =>
+    setSelected((prev) => new Set((items ?? []).filter((f) => !prev.has(f.id)).map((f) => f.id)));
+  const copyBySource = (src: string) =>
+    doCopy(
+      namesToClipboardText(
+        uniqueParamNames(
+          rows.filter((f) => Object.keys(((f.detail as Record<string, unknown>)?.sources ?? {}) as object).includes(src)),
+        ),
+      ),
+      `src-${src}`,
+    );
   const copyPair = (f: Finding, value: string) => doCopy(`${paramName(f)}=${value}`, `pair-${f.id}`);
 
   const setStatus = async (f: Finding, status: Finding['status']) => {
@@ -61,7 +90,19 @@ export default function ParametersTab({
       <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
         {SOURCE_FILTERS.map((s) => (
           <Chip key={s} active={source === s} onClick={() => setSource(s)}>
-            {s === 'all' ? 'all sources' : s}
+            {s === 'all' ? 'all src' : s}
+          </Chip>
+        ))}
+        <span className="mx-1 h-4 w-px bg-slate-700" />
+        {METHOD_FILTERS.map((m) => (
+          <Chip key={m} active={methodF === m} onClick={() => setMethodF(m)}>
+            {m}
+          </Chip>
+        ))}
+        <span className="mx-1 h-4 w-px bg-slate-700" />
+        {CONF_FILTERS.map((c) => (
+          <Chip key={c} active={confF === c} onClick={() => setConfF(c)}>
+            {c}
           </Chip>
         ))}
         <select
@@ -81,6 +122,16 @@ export default function ParametersTab({
           label={`Copy Selected (${selected.size})`}
           disabled={selected.size === 0}
         />
+        <CopyButton onCopy={copyFiltered} flashKey="__filtered__" flash={flash} label="Copy Filtered" disabled={rows.length === 0} />
+        {source !== 'all' && (
+          <CopyButton onCopy={() => void copyBySource(source)} flashKey={`src-${source}`} flash={flash} label={`Copy ${source}`} />
+        )}
+        <span className="mx-1 h-4 w-px bg-slate-700" />
+        <Chip onClick={selectAll}>Select All</Chip>
+        <Chip onClick={selectFiltered}>Select Filtered</Chip>
+        <Chip onClick={invertSelection}>Invert</Chip>
+        <Chip onClick={deselectAll}>Deselect All</Chip>
+        {selected.size > 0 && <span className="text-[10px] text-slate-400">{selected.size} selected</span>}
       </div>
 
       <div className="border-b border-slate-700 px-3 py-2">

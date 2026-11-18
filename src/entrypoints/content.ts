@@ -68,6 +68,25 @@ export default defineContentScript({
         const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
         observations.push(...extractJsParams(bounded, pageUrl));
       }
+      // storage KEYS only — values are never read here
+      for (const [type, store] of [
+        ['local', localStorage],
+        ['session', sessionStorage],
+      ] as const) {
+        for (let i = 0; i < store.length; i++) {
+          const key = store.key(i);
+          if (!key || key.length > 64) continue;
+          observations.push({
+            name: key,
+            source: 'storage',
+            kind: 'storage-key',
+            pageUrl,
+            inputType: type,
+            confidence: 'low',
+            seenAt: new Date().toISOString(),
+          });
+        }
+      }
       log('extract', `collected ${observations.length} observations`, { pageUrl });
       return observations;
     }

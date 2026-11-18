@@ -1,0 +1,9 @@
+<!doctype html><html><head><title>Dynamic fixture</title></head><body>
+<div id="mount"></div>
+<script>
+  const p = new URLSearchParams(location.search);
+  const uid = p.get("user_id");
+  document.getElementById("mount").innerHTML = '<input name="dyn_field"><input type="hidden" name="dyn_hidden">';
+  fetch("/api/v2/orders?order_id=9&include=items&is_admin=0");
+</script>
+</body></html>

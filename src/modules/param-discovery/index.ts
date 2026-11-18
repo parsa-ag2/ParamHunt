@@ -117,6 +117,24 @@ export function createParamDiscovery(
     }));
   }
 
+  /** Cookie NAMES for the scoped origin — value is never read (privacy contract). */
+  async function harvestCookieNames(pageUrl: string, seenAt?: string): Promise<ParamObservation[]> {
+    try {
+      const jar = await chrome.cookies.getAll({ url: pageUrl });
+      const ts = seenAt ?? new Date().toISOString();
+      return jar.map((c) => ({
+        name: c.name,
+        source: 'cookie' as const,
+        kind: 'cookie-name' as const,
+        pageUrl,
+        confidence: 'low' as const,
+        seenAt: ts,
+      }));
+    } catch {
+      return [];
+    }
+  }
+
   /** Shared pipeline for both params/report and scan/trigger paths. */
   async function processObservations(
     observations: readonly ParamObservation[],
@@ -234,7 +252,15 @@ export function createParamDiscovery(
       }
       deps.noteOrigin(tab.view.origin);
       debugLog('report', `params/report: ${msg.observations.length} observations`, { tabId });
-      return await processObservations(msg.observations, msg.scriptSrcs, msg.urls, tabId, pageUrl);
+      // Cookie-name harvesting (metadata only — values are never read)
+      const cookieObservations = await harvestCookieNames(pageUrl, msg.observations[0]?.seenAt);
+      return await processObservations(
+        [...msg.observations, ...cookieObservations],
+        msg.scriptSrcs,
+        msg.urls,
+        tabId,
+        pageUrl,
+      );
     },
 
     'scan/trigger': async (msg) => {

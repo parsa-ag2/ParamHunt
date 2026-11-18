@@ -4,7 +4,7 @@
  * ParamObservation = one raw sighting (module output).
  * ParamRecord      = deduplicated, merged parameter (user-facing).
  */
-export type ParamSource = 'url' | 'form' | 'dom' | 'js' | 'network';
+export type ParamSource = 'url' | 'form' | 'dom' | 'js' | 'network' | 'cookie' | 'storage';
 
 export type ParamKind =
   | 'query' // URL query string of the current page
@@ -16,7 +16,9 @@ export type ParamKind =
   | 'url-literal' // query keys in <a href>/<form action> literals
   | 'js-query' // query-string keys in JS string literals / fetch URLs
   | 'js-searchparams' // URLSearchParams .get/.set/.append/.has arguments
-  | 'js-object'; // keys of params/data/config object literals
+  | 'js-object' // keys of params/data/config object literals
+  | 'cookie-name' // cookie NAME observed for the scoped origin (value never)
+  | 'storage-key'; // localStorage/sessionStorage key name (value never)
 
 export type ParamConfidence = 'high' | 'medium' | 'low';
 

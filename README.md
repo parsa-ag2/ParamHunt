@@ -14,6 +14,7 @@ A Chrome extension for browser-based security research: it **discovers and catal
   - Standalone DOM controls and `data-param` attributes
   - JavaScript sources: URL literals, `URLSearchParams` usage, param/config object keys (analyzed as text, never executed)
   - **Network requests**: query parameter names from browser-generated requests (metadata only — no bodies, headers, or credentials)
+  - **Cookies** (names + metadata, values never read) and **storage keys** (names + sizes, values never read)
 - **Deduplication** — the same parameter seen across pages/sources is merged into one entry with occurrence counts, source breakdown, method/input-type context, and a confidence rating.
 - **Scope control** — observes the current site's origin by default; extend it with an allowlist (domain or glob patterns) and exclusions in Options. Exclusions always win. Out-of-scope pages are never collected.
 - **DevTools workbench** — F12 → *ParamHunt* tab, organized into real views:
@@ -23,8 +24,11 @@ A Chrome extension for browser-based security research: it **discovers and catal
   - **Requests** — request metadata inspector with a manually-controlled GET replay (destination shown, scope enforced, credentials never replayed)
   - **Cookies** — metadata only (name/domain/path/flags); values are never displayed or copied
   - **Storage** — localStorage/sessionStorage key names + sizes on demand; values never collected
+  - **Parameter Builder** — select discovered parameters, assign one bulk value or per-parameter values, and generate the result live as a query string, `name=value` lines, JSON, or a complete URL (correct URL encoding; duplicate names merged; nothing is sent automatically)
+  - **Sources** — findings grouped by where they came from (URL / DOM / FORM / JS / NETWORK / COOKIE / STORAGE)
   - **Findings** — triage desk: confirm ★/review/ignore, researcher notes, search, removal
   - **Export JSON** — downloads the site's collected data
+  - Bulk selection: Select All / Select Filtered / Invert / Deselect + **Copy Filtered** and **Copy by Source**
 - **Popup** — current-tab scope status, discovered-parameters counter (this site), name preview, **Copy All**, **Rescan**, engine status.
 - **Automatic collection** — scans on page load, on dynamically added forms/fields, and on SPA navigations (history-state changes) for in-scope tabs.
 - **Persistence** — findings survive browser restarts (local browser storage, deduplicated).

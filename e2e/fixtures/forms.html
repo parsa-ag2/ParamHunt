@@ -1,0 +1,11 @@
+<!doctype html><html><head><title>Forms fixture</title></head><body>
+<form action="/checkout?step=1" method="POST">
+  <input type="hidden" name="csrf_token" value="t1">
+  <input type="hidden" name="returnUrl" value="/home">
+  <input name="email" type="email">
+  <input name="card" type="password">
+  <select name="country"><option>IR</option></select>
+  <textarea name="notes"></textarea>
+</form>
+<a href="/product-list?category_code=10&vendor_code=3">list</a>
+</body></html>

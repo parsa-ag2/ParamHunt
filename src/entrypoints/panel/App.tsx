@@ -4,11 +4,13 @@ import { useDevtoolsTabId, useScope, useSiteFindings } from './hooks';
 import { Empty, Toast } from './ui';
 import OverviewTab from './tabs/OverviewTab';
 import ParametersTab from './tabs/ParametersTab';
+import BuilderTab from './tabs/BuilderTab';
 import UrlsTab from './tabs/UrlsTab';
 import RequestsTab from './tabs/RequestsTab';
 import CookiesTab from './tabs/CookiesTab';
 import StorageTab from './tabs/StorageTab';
 import FindingsTab from './tabs/FindingsTab';
+import SourcesTab from './tabs/SourcesTab';
 
 /**
  * Panel shell — tabbed workbench (dark, DevTools-consistent):
@@ -16,7 +18,7 @@ import FindingsTab from './tabs/FindingsTab';
  * Export downloads the site's findings as JSON (real collected data only).
  */
 
-const TABS = ['Overview', 'Parameters', 'URLs', 'Requests', 'Cookies', 'Storage', 'Findings'] as const;
+const TABS = ['Overview', 'Parameters', 'Builder', 'URLs', 'Requests', 'Cookies', 'Storage', 'Findings', 'Sources'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Panel() {
@@ -62,6 +64,8 @@ export default function Panel() {
         return <OverviewTab origin={origin} />;
       case 'Parameters':
         return <ParametersTab page={siteFindings} error={findingsError} onRefresh={refresh} />;
+      case 'Builder':
+        return <BuilderTab page={siteFindings} origin={origin} />;
       case 'URLs':
         return <UrlsTab origin={origin} />;
       case 'Requests':
@@ -72,6 +76,8 @@ export default function Panel() {
         return <StorageTab tabId={tabId} />;
       case 'Findings':
         return <FindingsTab page={siteFindings} error={findingsError} onRefresh={refresh} />;
+      case 'Sources':
+        return <SourcesTab page={siteFindings} />;
       default:
         return <Empty label="unknown tab" />;
     }
