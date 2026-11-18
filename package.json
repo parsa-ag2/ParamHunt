@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "wxt",
-    "build": "wxt build",
+    "build": "wxt build && node scripts/sync-chrome.mjs",
+    "sync:chrome": "node scripts/sync-chrome.mjs",
     "zip": "wxt zip",
     "compile": "tsc --noEmit",
     "postinstall": "wxt prepare",

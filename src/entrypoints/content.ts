@@ -10,10 +10,11 @@
  *    via eval. See docs/SECURITY_MODEL.md §MAIN-world.
  *  - DOM listening (MutationObserver) and chrome.runtime messaging only.
  *
+ * NOTE: `defineContentScript` is a WXT auto-import (no import line needed).
+ *
  * TODO(M1+): param harvesting from live DOM/forms + location; storage
  * snapshots on demand; postMessage relay from the MAIN-world injector.
  */
-import { defineContentScript } from 'wxt';
 
 export default defineContentScript({
   matches: ['<all_urls>'],

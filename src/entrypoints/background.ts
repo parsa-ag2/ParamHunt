@@ -9,10 +9,12 @@
  *    module-level variables alone.
  *  - websocket/keepalive tricks are NOT planned — event-driven by design.
  *
+ * NOTE: `defineBackground` and `browser` are WXT auto-imports (no import line
+ * needed — matches wxt-dev templates; explicit 'wxt' import breaks prepare).
+ *
  * TODO(M0): boot Engine here with the chrome-backed StorageAdapter, register
  * modules, attach runtime.onMessage router (core/messaging/bridge).
  */
-import { defineBackground } from 'wxt';
 
 export default defineBackground(() => {
   console.log('[ParamHunt] background booted', { id: browser.runtime.id });
