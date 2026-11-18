@@ -92,6 +92,11 @@ export interface FindingDraft {
   observedAt: string;
   /** Tab the finding was observed in (if any). */
   tabId?: number;
+  /**
+   * Optional dedup identity: rows with the same key merge (occurrences++)
+   * instead of duplicating. Defaults to source|type|location|detail.
+   */
+  dedupeKey?: string;
 }
 
 /** Minimal logger interface (console-backed in dev, buffered in prod). */

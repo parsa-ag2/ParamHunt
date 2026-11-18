@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { DuplicateModuleError, ModuleRegistry } from './ModuleRegistry';
-import type { ModuleDefinition } from '@shared/types/module';
+import { DependencyCycleError, DuplicateModuleError, ModuleRegistry } from './ModuleRegistry';
+import type { ModuleDefinition, ModuleId } from '@shared/types/module';
 
-function fakeModule(id: ModuleDefinition['id']): ModuleDefinition {
+function fakeModule(id: string, dependencies?: string[]): ModuleDefinition {
   return {
-    id,
+    id: id as ModuleId,
     name: id,
     description: 'test module',
     contexts: ['background'],
     requiredApis: [],
+    dependencies: dependencies as ModuleId[] | undefined,
     start: () => {},
   };
 }
@@ -33,20 +34,31 @@ describe('ModuleRegistry', () => {
     expect(reg.get('export-engine')).toBeUndefined();
   });
 
-  it('list() returns all registered modules', () => {
+  it('resolveStartOrder: dependencies start before their dependents', () => {
     const reg = new ModuleRegistry();
+    reg.register(fakeModule('param-discovery', ['results-manager']));
     reg.register(fakeModule('results-manager'));
-    reg.register(fakeModule('export-engine'));
-    expect(reg.list().map((m) => m.id)).toEqual(['results-manager', 'export-engine']);
+    expect(reg.resolveStartOrder().map((m) => m.id)).toEqual(['results-manager', 'param-discovery']);
   });
 
-  it('resolveStartOrder preserves insertion order while cycle detection is a TODO(M0)', () => {
+  it('resolveStartOrder: deep chains order transitively', () => {
     const reg = new ModuleRegistry();
-    reg.register(fakeModule('results-manager'));
-    reg.register(fakeModule('export-engine'));
-    expect(reg.resolveStartOrder().map((m) => m.id)).toEqual([
-      'results-manager',
-      'export-engine',
-    ]);
+    reg.register(fakeModule('c', ['b']));
+    reg.register(fakeModule('b', ['a']));
+    reg.register(fakeModule('a'));
+    expect(reg.resolveStartOrder().map((m) => m.id)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('resolveStartOrder: unknown dependency fails loudly', () => {
+    const reg = new ModuleRegistry();
+    reg.register(fakeModule('x', ['does-not-exist' as ModuleId]));
+    expect(() => reg.resolveStartOrder()).toThrow(/unknown dependency/);
+  });
+
+  it('resolveStartOrder: dependency cycle throws with the cycle members', () => {
+    const reg = new ModuleRegistry();
+    reg.register(fakeModule('a', ['b']));
+    reg.register(fakeModule('b', ['a']));
+    expect(() => reg.resolveStartOrder()).toThrow(DependencyCycleError);
   });
 });

@@ -1,5 +1,6 @@
 import { defineConfig } from 'wxt';
 import tailwindcss from '@tailwindcss/vite';
+import { resolve } from 'node:path';
 
 // WXT generates the MV3 manifest from this config at build time.
 // See docs/TECHNICAL_DECISIONS.md #2 (why WXT over manual manifest / CRXJS).
@@ -8,6 +9,14 @@ export default defineConfig({
   modules: ['@wxt-dev/module-react'],
   vite: () => ({
     plugins: [tailwindcss()],
+    resolve: {
+      alias: {
+        '@core': resolve(__dirname, 'src/core'),
+        '@modules': resolve(__dirname, 'src/modules'),
+        '@shared': resolve(__dirname, 'src/shared'),
+        '@ui': resolve(__dirname, 'src/ui'),
+      },
+    },
   }),
   manifest: {
     name: 'ParamHunt',
