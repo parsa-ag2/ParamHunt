@@ -20,6 +20,8 @@ export interface Finding extends FindingDraft {
   lastSeenAt: string;
   /** User-applied state for triage workflow. */
   status: 'new' | 'reviewed' | 'confirmed' | 'ignored';
+  /** Researcher note (findings workflow). */
+  note?: string;
 }
 
 /** Query interface for the results browser (popup / devtools panel). */

@@ -72,9 +72,29 @@ export default defineContentScript({
       return observations;
     }
 
+    /** Same-origin URLs for the catalog: links + form actions (capped). */
+    function collectUrls(pageUrl: string): string[] {
+      const urls = new Set<string>();
+      const add = (raw: string | null) => {
+        if (!raw) return;
+        try {
+          const abs = new URL(raw, pageUrl);
+          if (abs.origin === location.origin && (abs.protocol === 'http:' || abs.protocol === 'https:')) {
+            urls.add(abs.href);
+          }
+        } catch {
+          // unresolvable — skip
+        }
+      };
+      for (const a of document.querySelectorAll('a[href]')) add(a.getAttribute('href'));
+      for (const f of document.querySelectorAll('form[action]')) add(f.getAttribute('action'));
+      add(pageUrl);
+      return [...urls].slice(0, 100);
+    }
+
     /** Full scan; returns false when the page is out of scope. */
     async function runScan(): Promise<
-      { ok: true; observations: ParamObservation[]; scriptSrcs: string[] } | { ok: false }
+      { ok: true; observations: ParamObservation[]; scriptSrcs: string[]; urls: string[] } | { ok: false }
     > {
       const pageUrl = location.href;
       if (!(await scopeAllows(pageUrl))) {
@@ -83,7 +103,8 @@ export default defineContentScript({
       }
       const observations = collectObservations(pageUrl);
       const scriptSrcs = collectScriptSrcs(document, pageUrl);
-      return { ok: true, observations, scriptSrcs };
+      const urls = collectUrls(pageUrl);
+      return { ok: true, observations, scriptSrcs, urls };
     }
 
     async function scanAndReport(): Promise<void> {
@@ -99,6 +120,7 @@ export default defineContentScript({
           type: 'params/report',
           observations: result.observations,
           scriptSrcs: result.scriptSrcs,
+          urls: result.urls,
         });
         log('report', `stored ${summary.stored} new, ${summary.duplicates} known`, { pageUrl: location.href });
       } catch (err) {
@@ -126,32 +148,65 @@ export default defineContentScript({
     });
 
     // background-relayed manual rescan (panel/popup buttons + SPA navigation)
+    // + storage-keys inspection (values never collected)
     chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
       const msg = raw as { type?: string; requestId?: string };
-      if (msg?.type !== 'scan/run' || !msg.requestId) return;
-      void (async () => {
-        try {
-          const result = await runScan();
-          sendResponse({
-            ok: true,
-            forRequestId: msg.requestId as string,
-            data: {
-              observations: result.ok ? result.observations : [],
-              scriptSrcs: result.ok ? result.scriptSrcs : [],
-              scope: { inScope: result.ok, reason: result.ok ? 'current-origin' : 'out-of-scope' },
-            },
-          });
-          if (result.ok) void scanAndReport(); // persist through the normal path too
-        } catch (err) {
-          pipelineError('content', 'error', `scan/run failed: ${err instanceof Error ? err.message : String(err)}`);
-          sendResponse({
-            ok: false,
-            forRequestId: msg.requestId as string,
-            error: { code: 'SCAN_ERROR', message: err instanceof Error ? err.message : String(err) },
-          });
-        }
-      })();
-      return true; // async reply
+      if (!msg?.type || !msg.requestId) return;
+
+      if (msg.type === 'scan/run') {
+        void (async () => {
+          try {
+            const result = await runScan();
+            sendResponse({
+              ok: true,
+              forRequestId: msg.requestId as string,
+              data: {
+                observations: result.ok ? result.observations : [],
+                scriptSrcs: result.ok ? result.scriptSrcs : [],
+                urls: result.ok ? result.urls : [],
+                scope: { inScope: result.ok, reason: result.ok ? 'current-origin' : 'out-of-scope' },
+              },
+            });
+            if (result.ok) void scanAndReport(); // persist through the normal path too
+          } catch (err) {
+            pipelineError('content', 'error', `scan/run failed: ${err instanceof Error ? err.message : String(err)}`);
+            sendResponse({
+              ok: false,
+              forRequestId: msg.requestId as string,
+              error: { code: 'SCAN_ERROR', message: err instanceof Error ? err.message : String(err) },
+            });
+          }
+        })();
+        return true; // async reply
+      }
+
+      if (msg.type === 'storage/keys') {
+        // METADATA ONLY: key names + sizes — values are never collected
+        void (async () => {
+          try {
+            const entries: { key: string; type: 'local' | 'session'; length: number }[] = [];
+            for (const [type, store] of [
+              ['local', localStorage],
+              ['session', sessionStorage],
+            ] as const) {
+              for (let i = 0; i < store.length; i++) {
+                const key = store.key(i);
+                if (key == null) continue;
+                entries.push({ key, type, length: (store.getItem(key) ?? '').length });
+              }
+            }
+            sendResponse({ ok: true, forRequestId: msg.requestId as string, data: { entries } });
+          } catch (err) {
+            pipelineError('content', 'error', `storage/keys failed: ${err instanceof Error ? err.message : String(err)}`);
+            sendResponse({
+              ok: false,
+              forRequestId: msg.requestId as string,
+              error: { code: 'STORAGE_ERROR', message: err instanceof Error ? err.message : String(err) },
+            });
+          }
+        })();
+        return true;
+      }
     });
 
     function startObservers(): void {

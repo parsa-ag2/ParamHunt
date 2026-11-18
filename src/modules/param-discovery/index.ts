@@ -13,6 +13,7 @@
 import type { MessagePayloads, ParamHuntMessage, ScopeView } from '@core/messaging/protocol';
 import type { FindingDraft, ModuleDefinition } from '@shared/types/module';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
+import type { UrlsStore } from '@core/results/urls';
 import { isInScope } from '@shared/scope';
 import { loadSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError } from '@shared/debug';
@@ -31,7 +32,10 @@ const MAX_BUNDLE_BYTES = 1_000_000;
 
 const debugLog = createPipelineLogger('discovery-bg');
 
-export function createParamDiscovery(results: ResultsManager): {
+export function createParamDiscovery(
+  results: ResultsManager,
+  deps: { urlsStore: UrlsStore; noteOrigin: (origin: string) => void },
+): {
   module: ModuleDefinition;
   handlers: RequestHandlers;
   /** Used by the background's webNavigation listener for SPA navigations. */
@@ -117,6 +121,7 @@ export function createParamDiscovery(results: ResultsManager): {
   async function processObservations(
     observations: readonly ParamObservation[],
     scriptSrcs: readonly string[],
+    urls: readonly string[],
     tabId: number | undefined,
     pageUrl: string,
   ): Promise<{ stored: number; duplicates: number; records: readonly ParamRecord[] }> {
@@ -133,6 +138,11 @@ export function createParamDiscovery(results: ResultsManager): {
       const { duplicate } = await api.add(draft);
       duplicate ? duplicates += 1 : stored += 1;
     }
+    // URL catalog (page sources; network sources arrive via http-analyzer)
+    if (urls.length > 0) {
+      const added = await deps.urlsStore.addMany(urls.map((u) => ({ url: u, source: 'page' as const })));
+      debugLog('store', `url catalog: ${added} new URLs`);
+    }
     debugLog('store', `stored ${stored} new, ${duplicates} known (occurrences updated)`);
     // ONE broadcast per batch — UIs refresh once, not per finding
     broadcastEvent({ type: 'findings/changed' });
@@ -143,13 +153,16 @@ export function createParamDiscovery(results: ResultsManager): {
   async function collectFromTab(tabId: number, requestId: string): Promise<{
     observations: ParamObservation[];
     scriptSrcs: string[];
+    urls: string[];
   } | null> {
     try {
       const reply = await chrome.tabs.sendMessage<
         { type: 'scan/run'; requestId: string },
-        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[] } }
+        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[]; urls: string[] } }
       >(tabId, { type: 'scan/run', requestId });
-      if (reply?.ok && reply.data) return reply.data;
+      if (reply?.ok && reply.data) {
+        return { observations: reply.data.observations, scriptSrcs: reply.data.scriptSrcs, urls: reply.data.urls ?? [] };
+      }
       return null;
     } catch {
       return null; // no content script in that tab (pre-install tab / SPA nav)
@@ -167,7 +180,8 @@ export function createParamDiscovery(results: ResultsManager): {
     // 1) direct collection from an already-injected content script
     const direct = await collectFromTab(tabId, `scan-${Date.now()}`);
     if (direct) {
-      const result = await processObservations(direct.observations, direct.scriptSrcs, tabId, tab.url ?? '');
+      if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
+      const result = await processObservations(direct.observations, direct.scriptSrcs, direct.urls ?? [], tabId, tab.url ?? '');
       return {
         status: 'collected',
         observations: result.records.length,
@@ -195,7 +209,8 @@ export function createParamDiscovery(results: ResultsManager): {
     await new Promise((r) => setTimeout(r, 300));
     const retry = await collectFromTab(tabId, `scan-retry-${Date.now()}`);
     if (retry) {
-      const result = await processObservations(retry.observations, retry.scriptSrcs, tabId, tab.url ?? '');
+      if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
+      const result = await processObservations(retry.observations, retry.scriptSrcs, retry.urls, tabId, tab.url ?? '');
       return {
         status: 'injected',
         observations: result.records.length,
@@ -217,8 +232,9 @@ export function createParamDiscovery(results: ResultsManager): {
         debugLog('report', 'params/report dropped — out of scope', { tabId });
         return { stored: 0, duplicates: 0, records: [] };
       }
+      deps.noteOrigin(tab.view.origin);
       debugLog('report', `params/report: ${msg.observations.length} observations`, { tabId });
-      return await processObservations(msg.observations, msg.scriptSrcs, tabId, pageUrl);
+      return await processObservations(msg.observations, msg.scriptSrcs, msg.urls, tabId, pageUrl);
     },
 
     'scan/trigger': async (msg) => {

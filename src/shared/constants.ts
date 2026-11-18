@@ -11,6 +11,8 @@ export const STORAGE_KEYS = {
   engineState: `${APP.storagePrefix}engine-state`,
   findings: `${APP.storagePrefix}findings`,
   settings: `${APP.storagePrefix}settings`,
+  requests: `${APP.storagePrefix}requests`,
+  urls: `${APP.storagePrefix}urls`,
 } as const;
 
 /** Dedup sample-value cap: values longer than this are truncated in findings. */

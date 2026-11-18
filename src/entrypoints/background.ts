@@ -17,15 +17,19 @@
 import { Engine } from '@core/engine/Engine';
 import { createChromeStorageAdapter } from '@core/storage/chromeStorageAdapter';
 import { isRequest, type ParamHuntMessage } from '@core/messaging/protocol';
-import { createResultsManager } from '@modules/results-manager';
+import { createResultsManager, type RequestHandlers } from '@modules/results-manager';
 import { createParamDiscovery } from '@modules/param-discovery';
+import { createHttpAnalyzer, createRequestScopeGate } from '@modules/http-analyzer';
+import { UrlsStore } from '@core/results/urls';
 import { isInScope } from '@shared/scope';
 import { loadSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
+import { STORAGE_KEYS } from '@shared/constants';
 
 export default defineBackground(() => {
   const storage = createChromeStorageAdapter();
   const log = createPipelineLogger('background');
+  void refreshDebugFlag();
 
   const engine = new Engine({
     storage,
@@ -37,12 +41,26 @@ export default defineBackground(() => {
   });
 
   const results = createResultsManager(storage);
-  const discovery = createParamDiscovery(results);
+  const urlsStore = new UrlsStore(storage, STORAGE_KEYS.urls);
+  const gate = createRequestScopeGate();
+  const discovery = createParamDiscovery(results, { urlsStore, noteOrigin: gate.note });
+  const http = createHttpAnalyzer(storage, urlsStore, gate);
 
   engine.register(results.module);
   engine.register(discovery.module);
+  engine.register(http.module);
 
-  const handlers = { ...results.handlers, ...discovery.handlers };
+  const handlers: RequestHandlers = {
+    ...results.handlers,
+    ...discovery.handlers,
+    ...http.handlers,
+    // The engine itself answers engine/status (root cause of the v0.1.0
+    // "no handler for engine/status" error: no module owned this message).
+    'engine/status': async () => ({
+      running: engine.isRunning(),
+      modules: engine.statusList(),
+    }),
+  };
 
   chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
     if (!isRequest(raw)) return; // broadcast events have no receiver here
@@ -50,6 +68,7 @@ export default defineBackground(() => {
     const msg = raw as ParamHuntMessage;
     const handler = handlers[msg.type];
     if (!handler) {
+      pipelineError('background', 'message', `NO HANDLER for ${msg.type}`, { sender: sender.tab?.url });
       sendResponse({
         ok: false,
         forRequestId: (msg as { requestId: string }).requestId,
@@ -73,6 +92,9 @@ export default defineBackground(() => {
       });
     return true; // keep the channel open for the async reply
   });
+
+  // HTTP observatory: request metadata within the permitted scope
+  http.attachWebRequest();
 
   // SPA navigations (pushState/replaceState) — rescan the tab when in scope
   chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
@@ -98,7 +120,6 @@ export default defineBackground(() => {
     })();
   });
 
-  void refreshDebugFlag();
   void engine.start().catch((err) => {
     pipelineError('background', 'error', 'engine boot failed', err);
   });

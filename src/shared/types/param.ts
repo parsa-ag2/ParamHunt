@@ -4,7 +4,7 @@
  * ParamObservation = one raw sighting (module output).
  * ParamRecord      = deduplicated, merged parameter (user-facing).
  */
-export type ParamSource = 'url' | 'form' | 'dom' | 'js';
+export type ParamSource = 'url' | 'form' | 'dom' | 'js' | 'network';
 
 export type ParamKind =
   | 'query' // URL query string of the current page

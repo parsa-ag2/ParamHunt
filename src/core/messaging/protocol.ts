@@ -9,6 +9,7 @@
  */
 import type { Finding, FindingPage, FindingQuery } from '@shared/types/finding';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
+import type { CookieMeta, RequestRecord, StorageKeyMeta, UrlRecord } from '@shared/types/http';
 import type { ModuleId, ModuleStatus } from '@shared/types/module';
 
 /** Scope view sent to UIs. */
@@ -29,6 +30,7 @@ export type ParamHuntMessage =
   | { type: 'findings/status'; requestId: string; ids: readonly string[]; status: Finding['status'] }
   | { type: 'findings/remove'; requestId: string; ids: readonly string[] }
   | { type: 'findings/clear'; requestId: string }
+  | { type: 'findings/note'; requestId: string; id: string; note: string }
   // -- parameter discovery ---------------------------------------------------
   | {
       type: 'params/report';
@@ -37,6 +39,8 @@ export type ParamHuntMessage =
       observations: readonly ParamObservation[];
       /** <script src> URLs for the background to fetch + mine (host perms). */
       scriptSrcs: readonly string[];
+      /** URLs seen on the page (links, form actions) for the URL catalog. */
+      urls: readonly string[];
     }
   | {
       type: 'scan/trigger';
@@ -46,7 +50,25 @@ export type ParamHuntMessage =
   /** internal: background -> content, triggers a scan in that tab */
   | { type: 'scan/run'; requestId: string }
   // -- scope -----------------------------------------------------------------
-  | { type: 'scope/get'; requestId: string; tabId: number };
+  | { type: 'scope/get'; requestId: string; tabId: number }
+  // -- HTTP observatory -------------------------------------------------------
+  | { type: 'http/query'; requestId: string; origin?: string }
+  | { type: 'http/clear'; requestId: string }
+  /**
+   * MANUAL replay of an observed GET request. The message itself is the
+   * explicit user action; scope is re-checked here; cookies/credentials are
+   * NOT replayed (credentials: 'omit'), and bodies are never sent.
+   */
+  | { type: 'http/replay'; requestId: string; url: string }
+  // -- URL catalog -------------------------------------------------------------
+  | { type: 'urls/query'; requestId: string; origin?: string }
+  | { type: 'urls/clear'; requestId: string }
+  // -- cookies (metadata only — values never leave the browser jar) -----------
+  | { type: 'cookies/query'; requestId: string; tabId: number }
+  // -- browser storage keys (values never collected) --------------------------
+  | { type: 'storage/inspect'; requestId: string; tabId: number }
+  /** internal: background -> content, collects key metadata only */
+  | { type: 'storage/keys'; requestId: string };
 
 /** Broadcast event: pushed by the background after findings change. */
 export type ParamHuntEvent = { type: 'findings/changed' };
@@ -88,6 +110,15 @@ export interface MessagePayloads {
   };
   'scan/run': { observations: number; scriptSrcs: number; scope: ScopeDecisionView };
   'scope/get': ScopeView;
+  'http/query': { requests: RequestRecord[]; total: number };
+  'http/clear': { cleared: number };
+  'http/replay': { status: number; statusText: string; contentType?: string; bodyPreview?: string; finalUrl?: string; error?: string };
+  'urls/query': { urls: UrlRecord[]; total: number };
+  'urls/clear': { cleared: number };
+  'cookies/query': { cookies: CookieMeta[] };
+  'storage/inspect': { entries: StorageKeyMeta[] };
+  'storage/keys': { entries: StorageKeyMeta[] };
+  'findings/note': { updated: number };
 }
 
 /** Minimal scope decision mirrored into scan replies (content-side view). */

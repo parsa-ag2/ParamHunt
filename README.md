@@ -8,14 +8,23 @@ A Chrome extension for browser-based security research: it **discovers and catal
 
 ## What it does now
 
-- **Parameter Discovery** — collects parameter names from every client-side source on the pages you visit:
+- **Parameter Discovery** — collects parameter names from client-side sources *and* observed network requests:
   - URL query + fragment parameters
   - HTML forms: action, method, inputs/selects/textareas, **hidden inputs**
   - Standalone DOM controls and `data-param` attributes
   - JavaScript sources: URL literals, `URLSearchParams` usage, param/config object keys (analyzed as text, never executed)
+  - **Network requests**: query parameter names from browser-generated requests (metadata only — no bodies, headers, or credentials)
 - **Deduplication** — the same parameter seen across pages/sources is merged into one entry with occurrence counts, source breakdown, method/input-type context, and a confidence rating.
 - **Scope control** — observes the current site's origin by default; extend it with an allowlist (domain or glob patterns) and exclusions in Options. Exclusions always win. Out-of-scope pages are never collected.
-- **DevTools panel** — F12 → *ParamHunt* tab: live parameter table with source badges, method/type context, occurrence counts, confidence, detail view, text filter + source filters + sorting, manual **Rescan** (auto-injects the collector into tabs opened before install), **Copy** per parameter, **Copy All** (unique, one per line), **Copy Selected**, and Clear.
+- **DevTools workbench** — F12 → *ParamHunt* tab, organized into real views:
+  - **Overview** — live counters (parameters, URLs, requests, cookies), engine status
+  - **Parameters** — searchable/sortable table (source, method, type, occurrences, confidence), source filters, detail view with a local value inspector and researcher notes, per-row **Copy**, **Copy All** (unique), **Copy Selected**
+  - **URLs** — observed URLs grouped by origin, expandable to parameters, copy URL/path/query/names (sensitive values masked by default)
+  - **Requests** — request metadata inspector with a manually-controlled GET replay (destination shown, scope enforced, credentials never replayed)
+  - **Cookies** — metadata only (name/domain/path/flags); values are never displayed or copied
+  - **Storage** — localStorage/sessionStorage key names + sizes on demand; values never collected
+  - **Findings** — triage desk: confirm ★/review/ignore, researcher notes, search, removal
+  - **Export JSON** — downloads the site's collected data
 - **Popup** — current-tab scope status, discovered-parameters counter (this site), name preview, **Copy All**, **Rescan**, engine status.
 - **Automatic collection** — scans on page load, on dynamically added forms/fields, and on SPA navigations (history-state changes) for in-scope tabs.
 - **Persistence** — findings survive browser restarts (local browser storage, deduplicated).

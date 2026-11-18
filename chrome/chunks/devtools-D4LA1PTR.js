@@ -1,0 +1,1 @@
+import"./modulepreload-polyfill-P2Xu9kJm.js";import{n as e,t}from"./debug-Cc5fpjHx.js";var n=t(`devtools`);try{chrome.devtools.panels.create(`ParamHunt`,`/icons/icon-32.png`,`panel.html`,e=>{n(`ui`,`panel created`,{panel:e.toString()})})}catch(t){e(`devtools`,`error`,`panel creation failed`,t)}

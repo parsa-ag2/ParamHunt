@@ -10,6 +10,7 @@ import { createMemoryAdapter } from '@core/storage/memoryAdapter';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import { createResultsManager } from '@modules/results-manager';
 import { createParamDiscovery } from '@modules/param-discovery';
+import { UrlsStore } from '@core/results/urls';
 import type { FindingPage } from '@shared/types/finding';
 import type { ParamObservation } from '@shared/types/param';
 
@@ -49,7 +50,7 @@ beforeEach(() => {
 
   const storage: StorageAdapter = createMemoryAdapter();
   const results = createResultsManager(storage);
-  const discovery = createParamDiscovery(results);
+  const discovery = createParamDiscovery(results, { urlsStore: new UrlsStore(storage, 'paramhunt:urls'), noteOrigin: () => {} });
   handlers = discovery.handlers;
   resultsHandlers = results.handlers;
 });
@@ -90,6 +91,7 @@ describe('collection → display pipeline', () => {
           obs('order_id', 'js-query', 'js'),
         ],
         scriptSrcs: [],
+        urls: [],
       },
       sender,
     );
@@ -112,7 +114,7 @@ describe('collection → display pipeline', () => {
   it('re-reporting the same param merges (occurrences++) instead of duplicating', async () => {
     for (let i = 0; i < 2; i++) {
       await must('params/report')(
-        { type: 'params/report', requestId: `r${i}`, observations: [obs('user_id', 'query', 'url')], scriptSrcs: [] },
+        { type: 'params/report', requestId: `r${i}`, observations: [obs('user_id', 'query', 'url')], scriptSrcs: [], urls: [] },
         sender,
       );
     }
@@ -128,7 +130,7 @@ describe('collection → display pipeline', () => {
     // exclusion rules always win — even for the tab's own origin
     storageBag.set('paramhunt:settings', { mode: 'origin', allowlist: [], exclusions: ['target.example.com'] });
     const report = await must('params/report')(
-      { type: 'params/report', requestId: 'r4', observations: [obs('q', 'query', 'url')], scriptSrcs: [] },
+      { type: 'params/report', requestId: 'r4', observations: [obs('q', 'query', 'url')], scriptSrcs: [], urls: [] },
       sender,
     );
     expect(report.stored).toBe(0);

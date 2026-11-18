@@ -67,6 +67,11 @@ export function createResultsManager(storage: StorageAdapter): {
       await countChanged();
       return { cleared };
     },
+    'findings/note': async (msg) => {
+      const updated = await store.setNote(msg.id, msg.note);
+      if (updated > 0) await countChanged();
+      return { updated };
+    },
   };
 
   /** Exposed for the param-discovery module (single pipeline, no direct UI writes). */

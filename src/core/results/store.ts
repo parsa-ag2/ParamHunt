@@ -105,6 +105,16 @@ export class FindingsStore {
     return items.length;
   }
 
+  /** Attach/replace a researcher note on a finding. */
+  async setNote(id: string, note: string): Promise<number> {
+    const items = await this.load();
+    const f = items.find((x) => x.id === id);
+    if (!f) return 0;
+    f.note = note;
+    await this.persist(items);
+    return 1;
+  }
+
   /** @internal test hook */
   async debugAll(): Promise<Finding[]> {
     return [...(await this.load())];
