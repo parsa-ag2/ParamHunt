@@ -15,8 +15,9 @@ A Chrome extension for browser-based security research: it **discovers and catal
   - JavaScript sources: URL literals, `URLSearchParams` usage, param/config object keys (analyzed as text, never executed)
 - **Deduplication** — the same parameter seen across pages/sources is merged into one entry with occurrence counts, source breakdown, method/input-type context, and a confidence rating.
 - **Scope control** — observes the current site's origin by default; extend it with an allowlist (domain or glob patterns) and exclusions in Options. Exclusions always win. Out-of-scope pages are never collected.
-- **DevTools panel** — F12 → *ParamHunt* tab: live parameter table with source badges, confidence, occurrence counts, detail view, text filter, manual **Rescan**, and Clear.
-- **Popup** — current-tab scope status, discovered-parameters counter, engine module status.
+- **DevTools panel** — F12 → *ParamHunt* tab: live parameter table with source badges, method/type context, occurrence counts, confidence, detail view, text filter + source filters + sorting, manual **Rescan** (auto-injects the collector into tabs opened before install), **Copy** per parameter, **Copy All** (unique, one per line), **Copy Selected**, and Clear.
+- **Popup** — current-tab scope status, discovered-parameters counter (this site), name preview, **Copy All**, **Rescan**, engine status.
+- **Automatic collection** — scans on page load, on dynamically added forms/fields, and on SPA navigations (history-state changes) for in-scope tabs.
 - **Persistence** — findings survive browser restarts (local browser storage, deduplicated).
 - **Manual rescan** — collect from dynamically added forms/fields on demand.
 
@@ -33,7 +34,7 @@ The repository ships a **ready-to-load extension folder** (`chrome/`), which con
 
 ## Privacy
 
-All data stays on your machine: findings live in local browser storage and leave your device only when you export them (export UI is in development). No telemetry, no external servers. The extension requests `storage`, `scripting`, `webRequest`, `tabs`, `activeTab`, `cookies` and host access for the targets you choose; the scope system gates what is actually collected.
+All data stays on your machine: findings live in local browser storage and leave your device only when you export them (export UI is in development). No telemetry, no external servers. The extension requests `storage`, `scripting`, `webRequest`, `tabs`, `activeTab`, `cookies`, `webNavigation` and host access for the targets you choose; the scope system gates what is actually collected.
 
 ## Development
 

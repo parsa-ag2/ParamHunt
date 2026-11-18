@@ -1,16 +1,20 @@
 /**
  * entrypoints/devtools/devtools.ts — DevTools integration entry.
  *
- * Runs in the DEVTOOLS PAGE context: has chrome.devtools.* plus most
- * extension APIs. `inspectedWindow.tabId` identifies the target tab.
+ * Runs in the DEVTOOLS PAGE context. Creates the ParamHunt panel — this was
+ * the v0.0.1 root cause of "results not displayed": the panel was never
+ * registered, so panel.html was unreachable.
  *
- * Why a DevTools panel for this tool (decision — docs/TECHNICAL_DECISIONS #5):
- *  - popup dies on close; a devtools panel persists for the whole inspection
- *    session, has full-width real estate for result tables, and sits exactly
- *    where web researchers already work.
- *  - Network details require the debugger API or CDP — available from the
- *    devtools context without extra user gestures.
- *
- * TODO(M2): chrome.devtools.panels.create('ParamHunt', icon, 'panel.html').
+ * `inspectedWindow.tabId` identifies the target tab for the panel UI.
  */
-console.log('[ParamHunt] devtools page loaded for tab', chrome.devtools.inspectedWindow.tabId);
+import { createPipelineLogger, pipelineError } from '@shared/debug';
+
+const log = createPipelineLogger('devtools');
+
+try {
+  chrome.devtools.panels.create('ParamHunt', '/icons/icon-32.png', 'panel.html', (panel) => {
+    log('ui', 'panel created', { panel: panel.toString() });
+  });
+} catch (err) {
+  pipelineError('devtools', 'error', 'panel creation failed', err);
+}

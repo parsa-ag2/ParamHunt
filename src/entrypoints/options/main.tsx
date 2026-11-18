@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { loadSettings, saveSettings, type ScopeSettings } from '@shared/settings';
+import { refreshDebugFlag } from '@shared/debug';
 
-/** Options — scope allowlist/exclusion editor (persisted, enforced by both ends). */
+/** Options — scope editor + debug logging toggle (persisted, enforced by both ends). */
 export default function Options() {
   const [allowlist, setAllowlist] = useState('');
   const [exclusions, setExclusions] = useState('');
+  const [debug, setDebug] = useState(false);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -12,6 +14,7 @@ export default function Options() {
     void loadSettings().then((s: ScopeSettings) => {
       setAllowlist((s.allowlist ?? []).join('\n'));
       setExclusions((s.exclusions ?? []).join('\n'));
+      setDebug(s.debug === true);
     });
   }, []);
 
@@ -21,7 +24,9 @@ export default function Options() {
         mode: 'origin',
         allowlist: splitLines(allowlist),
         exclusions: splitLines(exclusions),
+        debug,
       });
+      await refreshDebugFlag();
       setSaved('Saved — applies to new scans immediately.');
       setTimeout(() => setSaved(null), 3000);
     } catch (err) {
@@ -66,10 +71,17 @@ export default function Options() {
         onClick={() => void save()}
         className="rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
       >
-        Save scope
+        Save settings
       </button>
       {saved && <span className="ml-2 text-xs text-emerald-300">{saved}</span>}
       {error && <span className="ml-2 text-xs text-red-300">{error}</span>}
+
+      <label className="mt-4 flex items-center gap-2">
+        <input type="checkbox" checked={debug} onChange={(e) => setDebug(e.target.checked)} className="accent-sky-500" />
+        <span className="text-xs text-slate-300">
+          Debug logging — pipeline stages in the service-worker and page consoles
+        </span>
+      </label>
     </main>
   );
 }

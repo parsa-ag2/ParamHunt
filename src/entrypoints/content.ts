@@ -8,6 +8,11 @@
  * Safety: read-only observation. No form submission, no value changes,
  * no page JS evaluation, and nothing is collected out of scope.
  *
+ * IDEMPOTENCY: this file may be injected twice into a tab (registered
+ * content script on load + programmatic injection for tabs opened before
+ * install/reload). A window flag prevents duplicate listeners; a scan
+ * still runs on every injection so programmatic rescans collect data.
+ *
  * BUILD FACT: WXT executes entrypoint files during build analysis — every
  * side effect lives inside main(); the module scope is side-effect-free.
  * `defineContentScript` is a WXT auto-import (no import line).
@@ -15,7 +20,7 @@
 import { sendRequest } from '@core/messaging/bridge';
 import { isInScope } from '@shared/scope';
 import { loadSettings } from '@shared/settings';
-import { createLogger } from '@shared/logger';
+import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
 import {
   collectInlineScripts,
   collectScriptSrcs,
@@ -32,8 +37,14 @@ export default defineContentScript({
   matches: ['<all_urls>'],
   runAt: 'document_idle',
   main() {
-    const log = createLogger('content');
-    let lastScanAt = 0;
+    // idempotency flag (survives within the isolated world for the tab's life)
+    const flag = window as unknown as { __paramhuntContentLoaded?: boolean };
+    const alreadyLoaded = flag.__paramhuntContentLoaded === true;
+    flag.__paramhuntContentLoaded = true;
+
+    const log = createPipelineLogger('content');
+    void refreshDebugFlag();
+
     let rescanTimer: ReturnType<typeof setTimeout> | undefined;
     let scanning = false;
 
@@ -57,6 +68,7 @@ export default defineContentScript({
         const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
         observations.push(...extractJsParams(bounded, pageUrl));
       }
+      log('extract', `collected ${observations.length} observations`, { pageUrl });
       return observations;
     }
 
@@ -66,17 +78,19 @@ export default defineContentScript({
     > {
       const pageUrl = location.href;
       if (!(await scopeAllows(pageUrl))) {
-        log.debug('out of scope — no collection', pageUrl);
+        log('collect', 'out of scope — no collection', { pageUrl });
         return { ok: false };
       }
       const observations = collectObservations(pageUrl);
       const scriptSrcs = collectScriptSrcs(document, pageUrl);
-      log.info(`collected ${observations.length} observations from ${scriptSrcs.length} script refs`);
       return { ok: true, observations, scriptSrcs };
     }
 
     async function scanAndReport(): Promise<void> {
-      if (scanning) return;
+      if (scanning) {
+        log('collect', 'scan skipped — one already running');
+        return;
+      }
       scanning = true;
       try {
         const result = await runScan();
@@ -86,10 +100,9 @@ export default defineContentScript({
           observations: result.observations,
           scriptSrcs: result.scriptSrcs,
         });
-        log.info(`reported: ${summary.stored} new, ${summary.duplicates} known`);
-        lastScanAt = Date.now();
+        log('report', `stored ${summary.stored} new, ${summary.duplicates} known`, { pageUrl: location.href });
       } catch (err) {
-        log.warn('scan/report failed (background may be asleep):', err);
+        pipelineError('content', 'error', `scan/report failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
         scanning = false;
       }
@@ -108,17 +121,11 @@ export default defineContentScript({
         }),
       );
       if (!relevant) return;
-      if (Date.now() - lastScanAt < RESCAN_DEBOUNCE_MS) return;
       if (rescanTimer) clearTimeout(rescanTimer);
       rescanTimer = setTimeout(() => void scanAndReport(), RESCAN_DEBOUNCE_MS);
     });
 
-    function startObservers(): void {
-      void scanAndReport();
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
-
-    // background-relayed manual rescan (DevTools panel button)
+    // background-relayed manual rescan (panel/popup buttons + SPA navigation)
     chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
       const msg = raw as { type?: string; requestId?: string };
       if (msg?.type !== 'scan/run' || !msg.requestId) return;
@@ -136,6 +143,7 @@ export default defineContentScript({
           });
           if (result.ok) void scanAndReport(); // persist through the normal path too
         } catch (err) {
+          pipelineError('content', 'error', `scan/run failed: ${err instanceof Error ? err.message : String(err)}`);
           sendResponse({
             ok: false,
             forRequestId: msg.requestId as string,
@@ -145,6 +153,15 @@ export default defineContentScript({
       })();
       return true; // async reply
     });
+
+    function startObservers(): void {
+      if (!alreadyLoaded) {
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+        log('content-init', 'observers registered', { href: location.href });
+      }
+      // scan runs on EVERY injection (initial load + programmatic rescan)
+      void scanAndReport();
+    }
 
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', startObservers, { once: true });

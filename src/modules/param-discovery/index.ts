@@ -5,31 +5,37 @@
  * authority: it re-checks scope (never trusting the sender), fetches the
  * page's script bundles with extension permissions, mines them as text,
  * deduplicates everything into ParamRecords and stores findings.
+ *
+ * scan/trigger handles the "already-open tab" problem: if the tab has no
+ * content script (opened before install/reload), it injects one
+ * programmatically (idempotent on the content side) and reports honestly.
  */
 import type { MessagePayloads, ParamHuntMessage, ScopeView } from '@core/messaging/protocol';
 import type { FindingDraft, ModuleDefinition } from '@shared/types/module';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
 import { isInScope } from '@shared/scope';
 import { loadSettings } from '@shared/settings';
+import { createPipelineLogger, pipelineError } from '@shared/debug';
 import {
-  collectInlineScripts,
-  collectScriptSrcs,
   dedupeParams,
-  extractDomParams,
   extractJsParams,
-  extractUrlParams,
 } from './lib/extract';
 import type { RequestHandlers } from '../results-manager';
 import type { ResultsManager } from '../results-manager';
+import { broadcastEvent } from '@core/messaging/bridge';
 
 type MessageSender = chrome.runtime.MessageSender;
 
 const MAX_BUNDLES = 8;
 const MAX_BUNDLE_BYTES = 1_000_000;
 
+const debugLog = createPipelineLogger('discovery-bg');
+
 export function createParamDiscovery(results: ResultsManager): {
   module: ModuleDefinition;
   handlers: RequestHandlers;
+  /** Used by the background's webNavigation listener for SPA navigations. */
+  triggerScan: (tabId: number) => Promise<MessagePayloads['scan/trigger']>;
 } {
   const { api } = results;
 
@@ -49,22 +55,31 @@ export function createParamDiscovery(results: ResultsManager): {
   /** Authority-side scope check: the tab URL decides, not the sender's claim. */
   async function tabInScope(tabId: number | undefined): Promise<{ url?: string; view: ScopeView } | null> {
     if (!tabId) return null;
-    const tab = await chrome.tabs.get(tabId);
-    const url = tab.url;
-    if (!url) return null;
-    const settings = await loadSettings();
-    const origin = new URL(url).origin;
-    const decision = isInScope(url, { currentOrigin: origin, allowlist: settings.allowlist, exclusions: settings.exclusions });
-    return {
-      url,
-      view: {
-        origin,
-        inScope: decision.inScope,
-        reason: decision.reason,
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      const url = tab.url;
+      if (!url) return null;
+      const settings = await loadSettings();
+      const origin = new URL(url).origin;
+      const decision = isInScope(url, {
+        currentOrigin: origin,
         allowlist: settings.allowlist,
         exclusions: settings.exclusions,
-      },
-    } satisfies { url?: string; view: ScopeView };
+      });
+      return {
+        url,
+        view: {
+          origin,
+          inScope: decision.inScope,
+          reason: decision.reason,
+          allowlist: settings.allowlist,
+          exclusions: settings.exclusions,
+        },
+      };
+    } catch (err) {
+      pipelineError('discovery-bg', 'message', 'tabInScope failed', err);
+      return null;
+    }
   }
 
   /** Fetch + mine external bundles (extension context, host permissions). */
@@ -105,15 +120,91 @@ export function createParamDiscovery(results: ResultsManager): {
     tabId: number | undefined,
     pageUrl: string,
   ): Promise<{ stored: number; duplicates: number; records: readonly ParamRecord[] }> {
+    debugLog('collect', `processing ${observations.length} observations, ${scriptSrcs.length} script refs`, { tabId, pageUrl });
     const bundleObservations = await mineBundles(scriptSrcs, pageUrl);
+    if (bundleObservations.length > 0) {
+      debugLog('extract', `bundle mining added ${bundleObservations.length} observations`);
+    }
     const records = dedupeParams([...observations, ...bundleObservations]);
+    debugLog('dedupe', `${records.length} unique params from ${observations.length + bundleObservations.length} observations`);
     let stored = 0;
     let duplicates = 0;
     for (const draft of recordsToDrafts(records, tabId)) {
       const { duplicate } = await api.add(draft);
       duplicate ? duplicates += 1 : stored += 1;
     }
+    debugLog('store', `stored ${stored} new, ${duplicates} known (occurrences updated)`);
+    // ONE broadcast per batch — UIs refresh once, not per finding
+    broadcastEvent({ type: 'findings/changed' });
     return { stored, duplicates, records };
+  }
+
+  /** Ask a tab's content script to run a scan and hand back raw results. */
+  async function collectFromTab(tabId: number, requestId: string): Promise<{
+    observations: ParamObservation[];
+    scriptSrcs: string[];
+  } | null> {
+    try {
+      const reply = await chrome.tabs.sendMessage<
+        { type: 'scan/run'; requestId: string },
+        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[] } }
+      >(tabId, { type: 'scan/run', requestId });
+      if (reply?.ok && reply.data) return reply.data;
+      return null;
+    } catch {
+      return null; // no content script in that tab (pre-install tab / SPA nav)
+    }
+  }
+
+  /** scan/trigger implementation, shared by the UI button and SPA navigation. */
+  async function triggerScan(tabId: number): Promise<MessagePayloads['scan/trigger']> {
+    const tab = await tabInScope(tabId);
+    if (!tab?.view.inScope) {
+      debugLog('message', 'scan/trigger: out of scope', { tabId, origin: tab?.view.origin });
+      return { status: 'out-of-scope', observations: 0, stored: 0, duplicates: 0 };
+    }
+
+    // 1) direct collection from an already-injected content script
+    const direct = await collectFromTab(tabId, `scan-${Date.now()}`);
+    if (direct) {
+      const result = await processObservations(direct.observations, direct.scriptSrcs, tabId, tab.url ?? '');
+      return {
+        status: 'collected',
+        observations: result.records.length,
+        stored: result.stored,
+        duplicates: result.duplicates,
+      };
+    }
+
+    // 2) injection fallback: tab opened before install/reload, or SPA page
+    //    without a fresh document load. content.ts is idempotent.
+    debugLog('message', 'no content script in tab — injecting', { tabId });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        files: ['content-scripts/content.js'],
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      pipelineError('discovery-bg', 'error', `injection failed: ${message}`);
+      return { status: 'failed', observations: 0, stored: 0, duplicates: 0, error: message };
+    }
+
+    // the injected script registers its listener synchronously; retry once
+    // after a beat, then rely on its own async report (findings/changed)
+    await new Promise((r) => setTimeout(r, 300));
+    const retry = await collectFromTab(tabId, `scan-retry-${Date.now()}`);
+    if (retry) {
+      const result = await processObservations(retry.observations, retry.scriptSrcs, tabId, tab.url ?? '');
+      return {
+        status: 'injected',
+        observations: result.records.length,
+        stored: result.stored,
+        duplicates: result.duplicates,
+      };
+    }
+    // injected and collecting on its own — honest partial status
+    return { status: 'injected', observations: 0, stored: 0, duplicates: 0 };
   }
 
   const handlers: RequestHandlers = {
@@ -123,40 +214,16 @@ export function createParamDiscovery(results: ResultsManager): {
       const pageUrl = tab?.url ?? '';
       if (!tab?.view.inScope) {
         // defense in depth: content already filtered; drop silently
+        debugLog('report', 'params/report dropped — out of scope', { tabId });
         return { stored: 0, duplicates: 0, records: [] };
       }
-      const result = await processObservations(
-        msg.observations,
-        msg.scriptSrcs,
-        tabId,
-        pageUrl,
-      );
-      return result satisfies MessagePayloads['params/report'];
+      debugLog('report', `params/report: ${msg.observations.length} observations`, { tabId });
+      return await processObservations(msg.observations, msg.scriptSrcs, tabId, pageUrl);
     },
 
     'scan/trigger': async (msg) => {
-      const tab = await tabInScope(msg.tabId);
-      if (!tab?.view.inScope) {
-        return { observations: 0, stored: 0, duplicates: 0 };
-      }
-      const reply = await chrome.tabs.sendMessage<
-        { type: 'scan/run'; requestId: string },
-        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[] } }
-      >(msg.tabId, { type: 'scan/run', requestId: msg.requestId });
-      if (!reply?.ok || !reply.data) {
-        return { observations: 0, stored: 0, duplicates: 0 };
-      }
-      const result = await processObservations(
-        reply.data.observations,
-        reply.data.scriptSrcs,
-        msg.tabId,
-        tab.url ?? '',
-      );
-      return {
-        observations: result.records.length,
-        stored: result.stored,
-        duplicates: result.duplicates,
-      };
+      debugLog('message', 'scan/trigger', { tabId: msg.tabId });
+      return await triggerScan(msg.tabId);
     },
 
     'scope/get': async (msg) => {
@@ -175,5 +242,5 @@ export function createParamDiscovery(results: ResultsManager): {
     },
   };
 
-  return { module, handlers };
+  return { module, handlers, triggerScan };
 }

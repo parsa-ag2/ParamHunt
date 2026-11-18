@@ -24,7 +24,7 @@ export default defineConfig({
       'Browser-based security research tool — parameter discovery, HTTP analysis, DOM & JS inspection. For authorized testing only.',
     version: '0.0.1',
     // Minimum permission set; every entry is justified in docs/SECURITY_MODEL.md.
-    permissions: ['storage', 'scripting', 'webRequest', 'tabs', 'activeTab', 'cookies'],
+    permissions: ['storage', 'scripting', 'webRequest', 'tabs', 'activeTab', 'cookies', 'webNavigation'],
     host_permissions: ['<all_urls>'],
     web_accessible_resources: [
       {

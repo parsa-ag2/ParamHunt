@@ -12,6 +12,8 @@ export interface ScopeSettings extends ScopeConfig {
   mode: 'origin';
   allowlist: string[];
   exclusions: string[];
+  /** Gated pipeline logging (shared/debug.ts). */
+  debug?: boolean;
 }
 
 export const DEFAULT_SETTINGS: ScopeSettings = {
@@ -27,6 +29,7 @@ export async function loadSettings(): Promise<ScopeSettings> {
     mode: 'origin',
     allowlist: Array.isArray(raw.allowlist) ? raw.allowlist.filter((x): x is string => typeof x === 'string') : [],
     exclusions: Array.isArray(raw.exclusions) ? raw.exclusions.filter((x): x is string => typeof x === 'string') : [],
+    debug: raw.debug === true,
   };
 }
 

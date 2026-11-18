@@ -74,7 +74,18 @@ export interface MessagePayloads {
   'findings/remove': { removed: number };
   'findings/clear': { cleared: number };
   'params/report': { stored: number; duplicates: number; records: readonly ParamRecord[] };
-  'scan/trigger': { observations: number; stored: number; duplicates: number };
+  /**
+   * scan/trigger result. `injected` means the tab had no content script
+   * (opened before install/reload) and one was injected programmatically;
+   * collection then reports asynchronously via findings/changed.
+   */
+  'scan/trigger': {
+    status: 'collected' | 'injected' | 'out-of-scope' | 'failed';
+    observations: number;
+    stored: number;
+    duplicates: number;
+    error?: string;
+  };
   'scan/run': { observations: number; scriptSrcs: number; scope: ScopeDecisionView };
   'scope/get': ScopeView;
 }
