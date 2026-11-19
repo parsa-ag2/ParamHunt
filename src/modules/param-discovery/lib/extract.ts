@@ -99,6 +99,82 @@ function docBase(doc: Document, pageUrl: string): string {
   return pageUrl;
 }
 
+/** Query keys from an <a href>/<form action> literal. */
+function literalQueryKeys(el: Element, pageUrl: string, base: string): ParamObservation[] {
+  const out: ParamObservation[] = [];
+  const target = el.getAttribute('href') ?? el.getAttribute('action');
+  if (!target || !target.includes('?')) return out;
+  try {
+    const abs = new URL(target, base);
+    for (const [name, value] of abs.searchParams) {
+      const o = obs(name, 'dom', 'url-literal', pageUrl, { sample: cap(value), confidence: 'medium' });
+      if (o) out.push(o);
+    }
+  } catch {
+    // relative URL without base — skip, never fabricate
+  }
+  return out;
+}
+
+/**
+ * INCREMENTAL extraction: params from ONE element (a control, an <a>,
+ * a <form>, or a container). Used by the MutationObserver path so the
+ * full document is never rescanned — only newly added subtrees are.
+ * `processed` marks elements already handled; callers skip those.
+ */
+export function extractFromNode(
+  node: Element,
+  pageUrl: string,
+  doc: Document,
+  processed: WeakSet<Element>,
+): ParamObservation[] {
+  const out: ParamObservation[] = [];
+  const base = docBase(doc, pageUrl);
+
+  const handle = (el: Element): void => {
+    if (processed.has(el)) return;
+    processed.add(el);
+    if (el.matches('a[href], form[action]')) out.push(...literalQueryKeys(el, pageUrl, base));
+    if (el.matches(CONTROL_SELECTOR)) {
+      const form = el.closest('form');
+      const rawMethod = (form?.getAttribute('method') ?? 'get').toUpperCase();
+      const method = rawMethod === 'POST' ? ('POST' as const) : ('GET' as const);
+      const o = controlObservation(el, pageUrl, method);
+      if (o) out.push(o);
+    }
+    if (el.tagName === 'SCRIPT') {
+      const src = el.getAttribute('src');
+      if (!src) {
+        const code = el.textContent ?? '';
+        if (code.trim().length > 0 && code.length <= MAX_INLINE_SCRIPT_CHARS) {
+          out.push(...extractJsParams(code, pageUrl));
+        }
+      }
+    }
+  };
+
+  handle(node);
+  // subtree additions (a <div> containing new inputs, a <form>, …)
+  const bounded =
+    node.children.length > 0 && node.querySelectorAll('*').length <= SUBTREE_SCAN_CAP
+      ? node
+      : node.matches('form') || node.children.length === 0
+        ? node
+        : null;
+  if (bounded) {
+    for (const el of bounded.querySelectorAll('a[href], form[action], form, ' + CONTROL_SELECTOR + ', script:not([src])')) {
+      handle(el);
+    }
+  }
+  return out;
+}
+
+/** Inline scripts larger than this are truncated before regex analysis. */
+const MAX_INLINE_SCRIPT_CHARS = 500_000;
+const SUBTREE_SCAN_CAP = 400;
+
+export { controlObservation as extractControl };
+
 /** Forms (with action/method), hidden inputs, standalone controls, data-param. */
 export function extractDomParams(doc: Document, pageUrl: string): ParamObservation[] {
   const out: ParamObservation[] = [];
@@ -106,17 +182,7 @@ export function extractDomParams(doc: Document, pageUrl: string): ParamObservati
 
   // URL-literal query keys from <a href> and <form action>
   for (const el of doc.querySelectorAll<HTMLAnchorElement | HTMLFormElement>('a[href], form[action]')) {
-    const target = el.getAttribute('href') ?? el.getAttribute('action');
-    if (!target || !target.includes('?')) continue;
-    try {
-      const abs = new URL(target, base);
-      for (const [name, value] of abs.searchParams) {
-        const o = obs(name, 'dom', 'url-literal', pageUrl, { sample: cap(value), confidence: 'medium' });
-        if (o) out.push(o);
-      }
-    } catch {
-      // relative URL without base — skip, never fabricate
-    }
+    out.push(...literalQueryKeys(el, pageUrl, base));
   }
 
   const seenControls = new Set<Element>();
@@ -232,10 +298,10 @@ export function collectInlineScripts(doc: Document): string[] {
 }
 
 /** <script src> URLs, absolute. */
-export function collectScriptSrcs(doc: Document, pageUrl: string): string[] {
+export function collectScriptSrcs(root: Document | Element, pageUrl: string): string[] {
   const srcs: string[] = [];
-  const base = docBase(doc, pageUrl);
-  for (const s of doc.querySelectorAll('script[src]')) {
+  const base = pageUrl.startsWith('http') ? pageUrl : (root as Document).baseURI?.startsWith('http') ? (root as Document).baseURI : pageUrl;
+  for (const s of root.querySelectorAll('script[src]')) {
     const raw = s.getAttribute('src');
     if (!raw) continue;
     try {

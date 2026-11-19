@@ -8,6 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryAdapter } from '@core/storage/memoryAdapter';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
+import { invalidateSettingsCache } from '@shared/settings';
 import { createResultsManager } from '@modules/results-manager';
 import { createParamDiscovery } from '@modules/param-discovery';
 import { UrlsStore } from '@core/results/urls';
@@ -33,6 +34,7 @@ const TAB_URL = 'https://target.example.com/app?utm=noise';
 
 beforeEach(() => {
   storageBag = new Map();
+  invalidateSettingsCache(); // the settings cache is process-global
   mock = {
     storage: {
       local: {

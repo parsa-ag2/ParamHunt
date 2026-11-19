@@ -30,6 +30,49 @@ export class FindingsStore {
     private readonly maxFindings: number = 10_000,
   ) {}
 
+  /**
+   * Batch insert: ONE load + ONE persist + dedup across the whole batch.
+   * This is the storage-write fix — the old per-finding `add()` loop wrote
+   * the full array once per finding (N writes per scan).
+   */
+  async addMany(drafts: readonly FindingDraft[]): Promise<{ stored: number; duplicates: number }> {
+    if (drafts.length === 0) return { stored: 0, duplicates: 0 };
+    const items = await this.load();
+    let stored = 0;
+    let duplicates = 0;
+    for (const draft of drafts) {
+      const hash = await this.hashOf(draft);
+      const existing = items.find((f) => f.hash === hash);
+      if (existing) {
+        existing.occurrences += 1;
+        existing.lastSeenAt = draft.observedAt;
+        const newSample = draft.detail?.sample;
+        if (typeof newSample === 'string' && existing.detail?.sample === undefined) {
+          existing.detail.sample = newSample;
+        }
+        duplicates += 1;
+        continue;
+      }
+      const finding: Finding = {
+        ...draft,
+        id: crypto.randomUUID(),
+        hash,
+        occurrences: 1,
+        firstSeenAt: draft.observedAt,
+        lastSeenAt: draft.observedAt,
+        status: 'new',
+      };
+      items.push(finding);
+      stored += 1;
+    }
+    if (items.length > this.maxFindings) {
+      items.sort((a, b) => a.firstSeenAt.localeCompare(b.firstSeenAt));
+      items.splice(0, items.length - this.maxFindings);
+    }
+    if (stored > 0) await this.persist(items);
+    return { stored, duplicates };
+  }
+
   async add(draft: FindingDraft): Promise<AddResult> {
     const items = await this.load();
     const hash = await this.hashOf(draft);

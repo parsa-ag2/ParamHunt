@@ -1,12 +1,24 @@
 import React, { useEffect, useState } from 'react';
-import { loadSettings, saveSettings, type ScopeSettings } from '@shared/settings';
+import ReactDOM from 'react-dom/client';
+import {
+  loadSettings,
+  saveSettings,
+  type ScopeSettings,
+  type DiscoveryConfig,
+} from '@shared/settings';
 import { refreshDebugFlag } from '@shared/debug';
 
-/** Options — scope editor + debug logging toggle (persisted, enforced by both ends). */
+/** Options — scope editor + discovery module toggles + debug logging. */
 export default function Options() {
   const [allowlist, setAllowlist] = useState('');
   const [exclusions, setExclusions] = useState('');
   const [debug, setDebug] = useState(false);
+  const [discovery, setDiscovery] = useState<DiscoveryConfig>({
+    jsBundles: true,
+    network: true,
+    cookies: true,
+    storage: true,
+  });
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -15,6 +27,7 @@ export default function Options() {
       setAllowlist((s.allowlist ?? []).join('\n'));
       setExclusions((s.exclusions ?? []).join('\n'));
       setDebug(s.debug === true);
+      setDiscovery(s.discovery);
     });
   }, []);
 
@@ -25,6 +38,7 @@ export default function Options() {
         allowlist: splitLines(allowlist),
         exclusions: splitLines(exclusions),
         debug,
+        discovery,
       });
       await refreshDebugFlag();
       setSaved('Saved — applies to new scans immediately.');
@@ -33,6 +47,9 @@ export default function Options() {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+
+  const toggleDiscovery = (key: keyof DiscoveryConfig) =>
+    setDiscovery((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <main className="mx-auto max-w-xl space-y-4 p-6 text-sm text-slate-200">
@@ -67,6 +84,40 @@ export default function Options() {
         />
       </label>
 
+      <fieldset className="rounded bg-slate-800 p-3">
+        <legend className="px-1 text-xs font-medium uppercase text-slate-400">Discovery modules</legend>
+        <p className="mb-2 text-[10px] leading-4 text-slate-500">
+          Disable expensive sources if a target is very heavy — everything else keeps working.
+          Defaults prioritize browser performance.
+        </p>
+        <div className="space-y-1.5">
+          <Toggle
+            checked={discovery.network}
+            onChange={() => toggleDiscovery('network')}
+            label="Network request observation"
+            hint="webRequest metadata per request (lightweight, deduplicated)"
+          />
+          <Toggle
+            checked={discovery.jsBundles}
+            onChange={() => toggleDiscovery('jsBundles')}
+            label="JavaScript bundle analysis"
+            hint="fetch + static text analysis of external scripts (cached, heaviest source)"
+          />
+          <Toggle
+            checked={discovery.cookies}
+            onChange={() => toggleDiscovery('cookies')}
+            label="Cookie names"
+            hint="names + metadata only — values are never read"
+          />
+          <Toggle
+            checked={discovery.storage}
+            onChange={() => toggleDiscovery('storage')}
+            label="Storage keys"
+            hint="localStorage/sessionStorage key names + sizes only"
+          />
+        </div>
+      </fieldset>
+
       <button
         onClick={() => void save()}
         className="rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-sky-500"
@@ -86,9 +137,41 @@ export default function Options() {
   );
 }
 
+function Toggle({
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <label className="flex items-start gap-2">
+      <input type="checkbox" checked={checked} onChange={onChange} className="mt-0.5 accent-sky-500" />
+      <span>
+        <span className="block text-xs text-slate-300">{label}</span>
+        <span className="block text-[10px] text-slate-500">{hint}</span>
+      </span>
+    </label>
+  );
+}
+
 function splitLines(text: string): string[] {
   return text
     .split('\n')
     .map((l) => l.trim())
     .filter(Boolean);
+}
+
+/** Mount — this was missing in earlier builds: the options page rendered blank. */
+const rootEl = document.getElementById('root');
+if (rootEl) {
+  ReactDOM.createRoot(rootEl).render(
+    <React.StrictMode>
+      <Options />
+    </React.StrictMode>,
+  );
 }

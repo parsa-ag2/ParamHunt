@@ -18,7 +18,7 @@ import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import type { UrlsStore } from '@core/results/urls';
 import type { RequestHandlers } from '../results-manager';
 import { isInScope } from '@shared/scope';
-import { loadSettings } from '@shared/settings';
+import { loadSettingsCached, watchSettings } from '@shared/settings';
 import { pipelineError } from '@shared/debug';
 
 const MAX_REQUESTS = 500;
@@ -44,7 +44,7 @@ export function createRequestScopeGate(): RequestScopeGate {
   const activeOrigins = new Set<string>();
   return {
     async check(url: string) {
-      const settings = await loadSettings();
+      const settings = await loadSettingsCached(); // cached — no storage read per request
       // requests have no "current origin" — allowlist/exclusions decide,
       // plus origins the user is actively researching this session
       const decision = isInScope(url, {
@@ -105,6 +105,9 @@ export function createHttpAnalyzer(
 } {
   let records: RequestRecord[] = [];
   let loaded = false;
+  /** Request-URL dedup: identical URLs (xhr polling!) are processed once. */
+  const seenUrls = new Set<string>();
+  let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
   async function loadAll(): Promise<RequestRecord[]> {
     if (loaded) return records;
@@ -115,16 +118,38 @@ export function createHttpAnalyzer(
   }
 
   async function persist(): Promise<void> {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = undefined;
+    }
     await storage.set('paramhunt:requests', records);
   }
 
+  /** Batched persistence — request-heavy pages must not write per event. */
+  function persistSoon(): void {
+    if (persistTimer) return;
+    persistTimer = setTimeout(() => {
+      persistTimer = undefined;
+      void persist();
+    }, 2_500);
+  }
+
   async function recordRequest(details: WebRequestDetails): Promise<void> {
+    const settings = await loadSettingsCached();
+    if (!settings.discovery.network) return; // user-disabled module
     const rec = requestRecord(details);
     if (!rec) return;
+    if (seenUrls.has(rec.url)) return; // dedup: same URL (polling xhr) once
     if (!(await gate.check(rec.url))) return;
+    seenUrls.add(rec.url);
+    if (seenUrls.size > 2_000) {
+      // FIFO eviction of the dedup set (oldest URL becomes eligible again)
+      const first = seenUrls.values().next().value;
+      if (first) seenUrls.delete(first);
+    }
     const items = await loadAll();
     records = [rec, ...items].slice(0, MAX_REQUESTS); // newest first, ring cap
-    await persist();
+    persistSoon(); // batched write — never one chrome.storage.set per request
     await urlsStore.addMany([{ url: rec.url, method: normalizeMethod(rec.method), source: 'network' }]);
   }
 
@@ -188,7 +213,7 @@ export function createHttpAnalyzer(
     'cookies/query': async (msg) => {
       const tab = await chrome.tabs.get(msg.tabId);
       if (!tab.url) return { cookies: [] };
-      const settings = await loadSettings();
+      const settings = await loadSettingsCached();
       const decision = isInScope(tab.url, {
         currentOrigin: new URL(tab.url).origin,
         allowlist: settings.allowlist,

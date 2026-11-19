@@ -22,7 +22,7 @@ import { createParamDiscovery } from '@modules/param-discovery';
 import { createHttpAnalyzer, createRequestScopeGate } from '@modules/http-analyzer';
 import { UrlsStore } from '@core/results/urls';
 import { isInScope } from '@shared/scope';
-import { loadSettings } from '@shared/settings';
+import { loadSettingsCached, watchSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
 import { STORAGE_KEYS } from '@shared/constants';
 
@@ -30,6 +30,7 @@ export default defineBackground(() => {
   const storage = createChromeStorageAdapter();
   const log = createPipelineLogger('background');
   void refreshDebugFlag();
+  watchSettings(); // settings cache invalidation — no storage reads per event
 
   const engine = new Engine({
     storage,
@@ -103,7 +104,7 @@ export default defineBackground(() => {
       try {
         const tab = await chrome.tabs.get(details.tabId);
         if (!tab.url) return;
-        const settings = await loadSettings();
+        const settings = await loadSettingsCached();
         const origin = new URL(tab.url).origin;
         const decision = isInScope(tab.url, {
           currentOrigin: origin,

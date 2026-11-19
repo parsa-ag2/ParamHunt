@@ -28,7 +28,10 @@ export type RequestHandlers = {
 export function createResultsManager(storage: StorageAdapter): {
   module: ModuleDefinition;
   handlers: RequestHandlers;
-  api: { add: (draft: FindingDraft) => Promise<{ duplicate: boolean }> };
+  api: {
+    add: (draft: FindingDraft) => Promise<{ duplicate: boolean }>;
+    addMany: (drafts: readonly FindingDraft[]) => Promise<{ stored: number; duplicates: number }>;
+  };
 } {
   const store = new FindingsStore(storage, STORAGE_KEYS.findings);
 
@@ -77,6 +80,8 @@ export function createResultsManager(storage: StorageAdapter): {
   /** Exposed for the param-discovery module (single pipeline, no direct UI writes). */
   const api = {
     add: (draft: FindingDraft): Promise<{ duplicate: boolean }> => store.add(draft).then((r) => ({ duplicate: r.duplicate })),
+    addMany: (drafts: readonly FindingDraft[]): Promise<{ stored: number; duplicates: number }> =>
+      store.addMany(drafts),
   };
 
   return { module, handlers, api };

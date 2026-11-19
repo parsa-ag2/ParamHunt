@@ -37,12 +37,31 @@ export function useSiteFindings(origin: string, extra: Omit<FindingQuery, 'locat
   const [page, setPage] = useState<FindingPage | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  /** Refresh throttle: a broadcast storm on busy pages can't thrash queries. */
+  const lastRefreshRef = useRef(0);
+  const extraRef = useRef(extra);
+  extraRef.current = extra;
 
-  const refresh = useCallback(() => setTick((t) => t + 1), []);
+  const refresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRefreshRef.current < 800) {
+      // coalesce: schedule a trailing refresh instead of refetching per event
+      if (throttleTimer == null) {
+        throttleTimer = setTimeout(() => {
+          throttleTimer = undefined;
+          setTick((t) => t + 1);
+          lastRefreshRef.current = Date.now();
+        }, 850);
+      }
+      return;
+    }
+    lastRefreshRef.current = now;
+    setTick((t) => t + 1);
+  }, []);
 
   useEffect(() => {
     const query: FindingQuery = {
-      ...extra,
+      ...extraRef.current,
       ...(origin ? { locationIncludes: origin } : {}),
     };
     void sendRequest<FindingPage>({ type: 'findings/query', query })
@@ -51,18 +70,20 @@ export function useSiteFindings(origin: string, extra: Omit<FindingQuery, 'locat
         setError(null);
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
-  }, [origin, tick, JSON.stringify(extra)]);
+  }, [origin, tick]);
 
   useEffect(() => {
     const onChanged = (msg: unknown) => {
-      if ((msg as { type?: string })?.type === 'findings/changed') setTick((t) => t + 1);
+      if ((msg as { type?: string })?.type === 'findings/changed') refresh();
     };
     chrome.runtime.onMessage.addListener(onChanged);
     return () => chrome.runtime.onMessage.removeListener(onChanged);
-  }, []);
+  }, [refresh]);
 
   return { page, error, refresh };
 }
+
+let throttleTimer: ReturnType<typeof setTimeout> | undefined;
 
 /** Simple clipboard helper with user-visible result. */
 export async function writeClipboard(text: string): Promise<boolean> {

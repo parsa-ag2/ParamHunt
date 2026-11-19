@@ -14,16 +14,25 @@ export interface UrlInput {
 
 export class UrlsStore {
   private cache: UrlRecord[] | null = null;
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     private readonly storage: StorageAdapter,
     private readonly key: string,
     private readonly maxUrls = 500,
+    /** Persistence debounce — hot request paths must not write per event. */
+    private readonly flushDelayMs = 2_500,
   ) {}
 
+  /**
+   * Merge into the in-memory catalog immediately; persist DEBOUNCED so a
+   * request-heavy page cannot thrash chrome.storage (flushes ≤1 per 2.5s,
+   * plus an immediate flush when the batch grows large).
+   */
   async addMany(inputs: readonly UrlInput[]): Promise<number> {
     const items = await this.load();
     let added = 0;
+    let updated = 0;
     for (const input of inputs) {
       const parsed = normalize(input.url);
       if (!parsed) continue;
@@ -35,6 +44,7 @@ export class UrlsStore {
         if (input.source === 'network' && existing.source === 'page') {
           existing.source = 'network'; // network sighting is the stronger evidence
         }
+        updated += 1;
         continue;
       }
       const nowIso = new Date().toISOString();
@@ -56,7 +66,8 @@ export class UrlsStore {
         items.sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));
         items.splice(0, items.length - this.maxUrls);
       }
-      await this.persist(items);
+      this.cache = items;
+      this.scheduleFlush(added >= 25 ? 0 : this.flushDelayMs);
     }
     return added;
   }
@@ -69,13 +80,29 @@ export class UrlsStore {
 
   async clear(): Promise<number> {
     const items = await this.load();
+    if (this.flushTimer) clearTimeout(this.flushTimer);
     await this.persist([]);
     return items.length;
+  }
+
+  /** Force-write the in-memory catalog (used by tests and shutdown paths). */
+  async flush(): Promise<void> {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    if (this.cache) await this.persist(this.cache);
   }
 
   /** @internal test hook */
   async debugAll(): Promise<UrlRecord[]> {
     return [...(await this.load())];
+  }
+
+  private scheduleFlush(delay: number): void {
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      if (this.cache) void this.persist(this.cache);
+    }, delay);
   }
 
   private async load(): Promise<UrlRecord[]> {

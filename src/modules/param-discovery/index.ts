@@ -15,7 +15,7 @@ import type { FindingDraft, ModuleDefinition } from '@shared/types/module';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
 import type { UrlsStore } from '@core/results/urls';
 import { isInScope } from '@shared/scope';
-import { loadSettings } from '@shared/settings';
+import { loadSettingsCached, type DiscoveryConfig } from '@shared/settings';
 import { createPipelineLogger, pipelineError } from '@shared/debug';
 import {
   dedupeParams,
@@ -63,7 +63,7 @@ export function createParamDiscovery(
       const tab = await chrome.tabs.get(tabId);
       const url = tab.url;
       if (!url) return null;
-      const settings = await loadSettings();
+      const settings = await loadSettingsCached();
       const origin = new URL(url).origin;
       const decision = isInScope(url, {
         currentOrigin: origin,
@@ -86,15 +86,38 @@ export function createParamDiscovery(
     }
   }
 
-  /** Fetch + mine external bundles (extension context, host permissions). */
-  async function mineBundles(scriptSrcs: readonly string[], pageUrl: string): Promise<ParamObservation[]> {
+  /**
+   * PERFORMANCE: mined bundles are cached (LRU, 50 entries) — a bundle is
+   * downloaded and analyzed exactly once per service-worker lifetime, no
+   * matter how many scans report it. Reads config: discovery.jsBundles.
+   */
+  const bundleCache = new Map<string, ParamObservation[]>();
+  const BUNDLE_CACHE_MAX = 50;
+
+  async function mineBundles(
+    scriptSrcs: readonly string[],
+    pageUrl: string,
+    config: DiscoveryConfig,
+  ): Promise<ParamObservation[]> {
+    if (!config.jsBundles) return []; // user-disabled module
     const observations: ParamObservation[] = [];
     for (const src of scriptSrcs.slice(0, MAX_BUNDLES)) {
+      const cached = bundleCache.get(src);
+      if (cached) {
+        observations.push(...cached);
+        continue;
+      }
       try {
         const res = await fetch(src);
         if (!res.ok) continue;
         const text = (await res.text()).slice(0, MAX_BUNDLE_BYTES);
-        observations.push(...extractJsParams(text, pageUrl || src));
+        const mined = extractJsParams(text, pageUrl || src);
+        observations.push(...mined);
+        bundleCache.set(src, mined);
+        if (bundleCache.size > BUNDLE_CACHE_MAX) {
+          const oldest = bundleCache.keys().next().value;
+          if (oldest) bundleCache.delete(oldest); // LRU eviction
+        }
       } catch {
         // unreachable bundle (CORS-less, offline) — skip, never fabricate
       }
@@ -118,7 +141,8 @@ export function createParamDiscovery(
   }
 
   /** Cookie NAMES for the scoped origin — value is never read (privacy contract). */
-  async function harvestCookieNames(pageUrl: string, seenAt?: string): Promise<ParamObservation[]> {
+  async function harvestCookieNames(pageUrl: string, config: DiscoveryConfig, seenAt?: string): Promise<ParamObservation[]> {
+    if (!config.cookies) return []; // user-disabled module
     try {
       const jar = await chrome.cookies.getAll({ url: pageUrl });
       const ts = seenAt ?? new Date().toISOString();
@@ -142,20 +166,20 @@ export function createParamDiscovery(
     urls: readonly string[],
     tabId: number | undefined,
     pageUrl: string,
+    config: DiscoveryConfig,
   ): Promise<{ stored: number; duplicates: number; records: readonly ParamRecord[] }> {
     debugLog('collect', `processing ${observations.length} observations, ${scriptSrcs.length} script refs`, { tabId, pageUrl });
-    const bundleObservations = await mineBundles(scriptSrcs, pageUrl);
+    const bundleObservations = await mineBundles(scriptSrcs, pageUrl, config);
     if (bundleObservations.length > 0) {
       debugLog('extract', `bundle mining added ${bundleObservations.length} observations`);
     }
     const records = dedupeParams([...observations, ...bundleObservations]);
     debugLog('dedupe', `${records.length} unique params from ${observations.length + bundleObservations.length} observations`);
-    let stored = 0;
-    let duplicates = 0;
-    for (const draft of recordsToDrafts(records, tabId)) {
-      const { duplicate } = await api.add(draft);
-      duplicate ? duplicates += 1 : stored += 1;
-    }
+    // PERFORMANCE: one batched store write + one broadcast per scan batch
+    // (the old loop persisted the full findings array once per finding).
+    const batch = await api.addMany(recordsToDrafts(records, tabId));
+    const stored = batch.stored;
+    const duplicates = batch.duplicates;
     // URL catalog (page sources; network sources arrive via http-analyzer)
     if (urls.length > 0) {
       const added = await deps.urlsStore.addMany(urls.map((u) => ({ url: u, source: 'page' as const })));
@@ -199,7 +223,8 @@ export function createParamDiscovery(
     const direct = await collectFromTab(tabId, `scan-${Date.now()}`);
     if (direct) {
       if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
-      const result = await processObservations(direct.observations, direct.scriptSrcs, direct.urls ?? [], tabId, tab.url ?? '');
+      const settings = await loadSettingsCached();
+      const result = await processObservations(direct.observations, direct.scriptSrcs, direct.urls ?? [], tabId, tab.url ?? '', settings.discovery);
       return {
         status: 'collected',
         observations: result.records.length,
@@ -228,7 +253,8 @@ export function createParamDiscovery(
     const retry = await collectFromTab(tabId, `scan-retry-${Date.now()}`);
     if (retry) {
       if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
-      const result = await processObservations(retry.observations, retry.scriptSrcs, retry.urls, tabId, tab.url ?? '');
+      const settings = await loadSettingsCached();
+      const result = await processObservations(retry.observations, retry.scriptSrcs, retry.urls, tabId, tab.url ?? '', settings.discovery);
       return {
         status: 'injected',
         observations: result.records.length,
@@ -252,14 +278,16 @@ export function createParamDiscovery(
       }
       deps.noteOrigin(tab.view.origin);
       debugLog('report', `params/report: ${msg.observations.length} observations`, { tabId });
+      const settings = await loadSettingsCached();
       // Cookie-name harvesting (metadata only — values are never read)
-      const cookieObservations = await harvestCookieNames(pageUrl, msg.observations[0]?.seenAt);
+      const cookieObservations = await harvestCookieNames(pageUrl, settings.discovery, msg.observations[0]?.seenAt);
       return await processObservations(
         [...msg.observations, ...cookieObservations],
         msg.scriptSrcs,
         msg.urls,
         tabId,
         pageUrl,
+        settings.discovery,
       );
     },
 
@@ -271,7 +299,7 @@ export function createParamDiscovery(
     'scope/get': async (msg) => {
       const tab = await tabInScope(msg.tabId);
       if (!tab) {
-        const settings = await loadSettings();
+        const settings = await loadSettingsCached();
         return {
           origin: '',
           inScope: false,
