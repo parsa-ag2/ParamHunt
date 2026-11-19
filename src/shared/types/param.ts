@@ -60,4 +60,10 @@ export interface ParamRecord {
   occurrences: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  /**
+   * URL associations: pathname → occurrences on that page (capped 50).
+   * A parameter seen on multiple pages belongs to EVERY group — this map
+   * is merged across scans; first/last page alone would lose the rest.
+   */
+  urls?: Record<string, number>;
 }

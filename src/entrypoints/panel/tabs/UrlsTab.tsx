@@ -11,6 +11,9 @@ export default function UrlsTab({ origin }: { origin: string }) {
   const [filter, setFilter] = useState('');
   const [showValues, setShowValues] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [methodF, setMethodF] = useState<'all' | 'GET' | 'POST' | 'OTHER'>('all');
+  const [sourceF, setSourceF] = useState<'all' | 'page' | 'network'>('all');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [flash, copyError, doCopy] = useCopyFlash();
 
   const refresh = (o: string) => {
@@ -28,11 +31,20 @@ export default function UrlsTab({ origin }: { origin: string }) {
   useEffect(() => refresh(origin), [origin]);
 
   const rows = useMemo(() => {
-    const list = urls ?? [];
+    let list = urls ?? [];
+    if (methodF !== 'all') list = list.filter((u) => u.method === methodF);
+    if (sourceF !== 'all') list = list.filter((u) => u.source === sourceF);
     const needle = filter.trim().toLowerCase();
     if (!needle) return list;
     return list.filter((u) => u.url.toLowerCase().includes(needle) || u.paramNames.some((p) => p.toLowerCase().includes(needle)));
-  }, [urls, filter]);
+  }, [urls, filter, methodF, sourceF]);
+
+  const toggleSelect = (url: string) =>
+    setSelected((prev) => {
+      const n = new Set(prev);
+      n.has(url) ? n.delete(url) : n.add(url);
+      return n;
+    });
 
   const copyUrl = (u: UrlRecord) => doCopy(urlForCopy(u.url, { includeValues: showValues }), `u-${u.url}`);
   const copyPath = (u: UrlRecord) => doCopy(u.path, `p-${u.url}`);
@@ -49,10 +61,44 @@ export default function UrlsTab({ origin }: { origin: string }) {
   return (
     <div className="flex h-full flex-col">
       <Toast error={error ?? copyError} message={null} />
-      <div className="flex items-center gap-2 border-b border-slate-700 px-3 py-1.5">
+      <div className="flex items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
+        {(['all', 'GET', 'POST', 'OTHER'] as const).map((m) => (
+          <button
+            key={m}
+            onClick={() => setMethodF(m)}
+            className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+              methodF === m ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {m}
+          </button>
+        ))}
+        {(['all', 'page', 'network'] as const).map((src) => (
+          <button
+            key={src}
+            onClick={() => setSourceF(src)}
+            className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
+              sourceF === src ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            {src}
+          </button>
+        ))}
+        <CopyButton
+          onCopy={() =>
+            void doCopy(
+              rows.filter((u) => selected.has(u.url)).map((u) => maskUrl(u.url)).join('\n'),
+              '__selurls__',
+            )
+          }
+          flashKey="__selurls__"
+          flash={flash}
+          label={`Copy Selected URLs (${selected.size})`}
+          disabled={selected.size === 0}
+        />
         <label className="flex items-center gap-1 text-[10px] text-slate-400">
           <input type="checkbox" checked={showValues} onChange={(e) => setShowValues(e.target.checked)} className="accent-sky-500" />
-          include param values in copies
+          include values
         </label>
         <span className="ml-auto text-xs text-slate-400">{urls ? `${rows.length} URLs` : '…'}</span>
       </div>

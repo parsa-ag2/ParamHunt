@@ -68,6 +68,7 @@ export default function App() {
   return (
     <main className="w-80 space-y-2.5 bg-slate-900 p-3 text-sm text-slate-200">
       <header className="flex items-center gap-2">
+        <img src="/icons/icon-32.png" alt="" className="h-5 w-5 rounded" />
         <h1 className="text-base font-semibold text-slate-100">ParamHunt</h1>
         <span className="rounded bg-slate-700 px-1.5 text-[10px] uppercase text-slate-300">v0.2.0</span>
       </header>

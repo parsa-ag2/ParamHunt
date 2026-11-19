@@ -321,10 +321,28 @@ export function collectScriptSrcs(root: Document | Element, pageUrl: string): st
  * (case-insensitive; the first spelling is kept for display).
  * Duplicate status surfaces as `occurrences` + per-source counts.
  */
+const MAX_URL_ASSOCIATIONS = 50;
+
+/** pathname helper cached per scan loop — avoid re-parsing the same URL. */
+function pathnameOf(pageUrl: string, cache: Map<string, string>): string {
+  const cached = cache.get(pageUrl);
+  if (cached !== undefined) return cached;
+  let path = pageUrl;
+  try {
+    path = new URL(pageUrl).pathname;
+  } catch {
+    // non-URL context — fall back to the raw string
+  }
+  cache.set(pageUrl, path);
+  return path;
+}
+
 export function dedupeParams(observations: ParamObservation[]): ParamRecord[] {
   const byKey = new Map<string, ParamRecord>();
+  const pathCache = new Map<string, string>();
   for (const o of observations) {
     const key = o.name.toLowerCase();
+    const path = pathnameOf(o.pageUrl, pathCache);
     const existing = byKey.get(key);
     if (!existing) {
       byKey.set(key, {
@@ -340,6 +358,7 @@ export function dedupeParams(observations: ParamObservation[]): ParamRecord[] {
         occurrences: 1,
         firstSeenAt: o.seenAt,
         lastSeenAt: o.seenAt,
+        urls: { [path]: 1 },
       });
       continue;
     }
@@ -348,6 +367,9 @@ export function dedupeParams(observations: ParamObservation[]): ParamRecord[] {
     if (o.method && !existing.methods.includes(o.method)) existing.methods.push(o.method);
     if (o.inputType && !existing.inputTypes.includes(o.inputType)) {
       existing.inputTypes.push(o.inputType);
+    }
+    if (Object.keys(existing.urls ?? {}).length < MAX_URL_ASSOCIATIONS || existing.urls?.[path]) {
+      existing.urls = { ...(existing.urls ?? {}), [path]: (existing.urls?.[path] ?? 0) + 1 };
     }
     existing.lastPageUrl = o.pageUrl;
     existing.firstSample ??= o.sample;

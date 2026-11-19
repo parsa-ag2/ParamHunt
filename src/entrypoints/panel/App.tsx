@@ -1,5 +1,4 @@
-import React, { useMemo, useState } from 'react';
-import { sendRequest } from '@core/messaging/bridge';
+import React, { useCallback, useMemo, useState } from 'react';import { sendRequest } from '@core/messaging/bridge';
 import { useDevtoolsTabId, useScope, useSiteFindings } from './hooks';
 import { Empty, Toast } from './ui';
 import OverviewTab from './tabs/OverviewTab';
@@ -28,6 +27,15 @@ export default function Panel() {
   const { page: siteFindings, error: findingsError, refresh } = useSiteFindings(origin, { limit: 1000 });
   const [tab, setTab] = useState<Tab>('Overview');
   const [exportMsg, setExportMsg] = useState<string | null>(null);
+  /** Seed handed to the Parameter Builder when a group presses Build Query. */
+  const [builderSeed, setBuilderSeed] = useState<{ names: string[]; baseUrl: string } | null>(null);
+  const buildForGroup = useCallback(
+    (names: string[], path: string) => {
+      setBuilderSeed({ names, baseUrl: origin ? `${origin}${path}` : '' });
+      setTab('Builder');
+    },
+    [origin],
+  );
 
   const exportJson = async () => {
     try {
@@ -63,9 +71,11 @@ export default function Panel() {
       case 'Overview':
         return <OverviewTab origin={origin} />;
       case 'Parameters':
-        return <ParametersTab page={siteFindings} error={findingsError} onRefresh={refresh} />;
+        return (
+          <ParametersTab page={siteFindings} error={findingsError} onRefresh={refresh} onBuildQuery={buildForGroup} />
+        );
       case 'Builder':
-        return <BuilderTab page={siteFindings} origin={origin} />;
+        return <BuilderTab page={siteFindings} origin={origin} seed={builderSeed} />;
       case 'URLs':
         return <UrlsTab origin={origin} />;
       case 'Requests':
@@ -87,6 +97,7 @@ export default function Panel() {
     <div className="flex h-screen flex-col bg-slate-900 text-slate-200">
       {/* header */}
       <header className="flex flex-wrap items-center gap-2 border-b border-slate-700 px-3 py-1.5">
+        <img src="/icons/icon-32.png" alt="" className="h-4 w-4 rounded" />
         <h1 className="text-sm font-semibold text-slate-100">ParamHunt</h1>
         {scope && (
           <span

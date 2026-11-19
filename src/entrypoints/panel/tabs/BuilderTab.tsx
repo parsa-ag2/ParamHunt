@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import type { FindingPage } from '@shared/types/finding';
 import { paramName } from '@modules/param-discovery/lib/format';
 import { buildOutput, type BuilderPair, type OutputFormat } from '@modules/param-discovery/lib/builder';
@@ -8,6 +8,9 @@ import { Chip, CopyButton, Empty, Toast, useCopyFlash } from '../ui';
  * Parameter Builder — select discovered parameters, assign values (bulk or
  * per-parameter), preview the generated output live in several formats.
  * Everything stays local until copied; nothing is sent anywhere.
+ *
+ * `seed` comes from a "Build Query" action on a URL group: it pre-selects
+ * the group's parameters and sets the base URL.
  */
 
 const FORMATS: { id: OutputFormat; label: string }[] = [
@@ -18,7 +21,20 @@ const FORMATS: { id: OutputFormat; label: string }[] = [
   { id: 'url', label: 'Complete URL' },
 ];
 
-export default function BuilderTab({ page, origin }: { page: FindingPage | null; origin: string }) {
+export interface BuilderSeed {
+  names: string[];
+  baseUrl: string;
+}
+
+export default function BuilderTab({
+  page,
+  origin,
+  seed,
+}: {
+  page: FindingPage | null;
+  origin: string;
+  seed?: BuilderSeed | null;
+}) {
   const items = page?.items ?? [];
 
   // selection
@@ -62,6 +78,13 @@ export default function BuilderTab({ page, origin }: { page: FindingPage | null;
     () => buildOutput(selectedPairs, format, { baseUrl }),
     [selectedPairs, format, baseUrl],
   );
+
+  // Build Query on a URL group seeds the selection + base URL (spec §3)
+  useEffect(() => {
+    if (!seed || seed.names.length === 0) return;
+    setSelectedNames(new Set(seed.names.map((n) => n.toLowerCase())));
+    if (seed.baseUrl) setBaseUrl(seed.baseUrl);
+  }, [seed]);
 
   const toggle = (name: string) => {
     const key = name.toLowerCase();

@@ -1,5 +1,9 @@
 # ParamHunt
 
+<div align="center">
+  <img src="assets/logo.svg" width="96" alt="ParamHunt logo" />
+</div>
+
 **English** | [فارسی](README_FA.md)
 
 A Chrome extension for browser-based security research: it **discovers and catalogs the parameters a web application exposes** — from the URL, forms (including hidden inputs), the live DOM, and the page's JavaScript — as you browse an authorized target.

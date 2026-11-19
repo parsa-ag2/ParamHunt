@@ -140,6 +140,49 @@ export function createParamDiscovery(
     }));
   }
 
+  /**
+   * Cross-scan merge: PRESERVES every association instead of freezing the
+   * first observation — source counts accumulate, kinds/methods/inputTypes
+   * union, URL associations (pathname→count) union (capped), confidence
+   * never downgrades. This is what keeps "Group by URL" complete over time.
+   */
+  function mergeParamDetail(
+    existing: Record<string, unknown>,
+    incoming: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const mergeCountMap = (a: unknown, b: unknown, cap: number): Record<string, number> => {
+      const out: Record<string, number> = { ...((a ?? {}) as Record<string, number>) };
+      for (const [k, v] of Object.entries((b ?? {}) as Record<string, number>)) {
+        out[k] = (out[k] ?? 0) + (typeof v === 'number' ? v : 1);
+      }
+      if (Object.keys(out).length <= cap) return out;
+      // cap: keep the highest-count associations (never silently drop all)
+      return Object.fromEntries(
+        Object.entries(out)
+          .sort((x, y) => y[1] - x[1])
+          .slice(0, cap),
+      );
+    };
+    const unionStrings = (a: unknown, b: unknown): string[] => {
+      const set = [...((a ?? []) as string[]), ...((b ?? []) as string[])];
+      return [...new Set(set)].slice(0, 20);
+    };
+    const rank: Record<string, number> = { low: 0, medium: 1, high: 2 };
+    const confA = String(existing.confidence ?? 'low');
+    const confB = String(incoming.confidence ?? 'low');
+    return {
+      ...existing,
+      sources: mergeCountMap(existing.sources, incoming.sources, 10),
+      kinds: unionStrings(existing.kinds, incoming.kinds),
+      methods: unionStrings(existing.methods, incoming.methods),
+      inputTypes: unionStrings(existing.inputTypes, incoming.inputTypes),
+      urls: mergeCountMap(existing.urls, incoming.urls, 50),
+      lastPageUrl: incoming.lastPageUrl ?? existing.lastPageUrl,
+      lastSeenAt: incoming.lastSeenAt ?? existing.lastSeenAt,
+      confidence: (rank[confA] ?? 0) >= (rank[confB] ?? 0) ? confA : confB,
+    };
+  }
+
   /** Cookie NAMES for the scoped origin — value is never read (privacy contract). */
   async function harvestCookieNames(pageUrl: string, config: DiscoveryConfig, seenAt?: string): Promise<ParamObservation[]> {
     if (!config.cookies) return []; // user-disabled module
@@ -177,7 +220,10 @@ export function createParamDiscovery(
     debugLog('dedupe', `${records.length} unique params from ${observations.length + bundleObservations.length} observations`);
     // PERFORMANCE: one batched store write + one broadcast per scan batch
     // (the old loop persisted the full findings array once per finding).
-    const batch = await api.addMany(recordsToDrafts(records, tabId));
+    // mergeParamDetail preserves source/URL associations across scans.
+    const batch = await api.addMany(recordsToDrafts(records, tabId), {
+      mergeDetail: mergeParamDetail,
+    });
     const stored = batch.stored;
     const duplicates = batch.duplicates;
     // URL catalog (page sources; network sources arrive via http-analyzer)

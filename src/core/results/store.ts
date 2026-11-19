@@ -20,6 +20,20 @@ export interface AddResult {
   duplicate: boolean;
 }
 
+export type DetailMerge = (
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) => Record<string, unknown>;
+
+export interface AddManyOptions {
+  /**
+   * Optional domain-aware merge for duplicate findings: decides how details
+   * combine on re-observation. Used by param-discovery to PRESERVE source
+   * and URL associations across scans (the default keeps the first detail).
+   */
+  mergeDetail?: DetailMerge;
+}
+
 export class FindingsStore {
   private cache: Finding[] | null = null;
 
@@ -35,7 +49,10 @@ export class FindingsStore {
    * This is the storage-write fix — the old per-finding `add()` loop wrote
    * the full array once per finding (N writes per scan).
    */
-  async addMany(drafts: readonly FindingDraft[]): Promise<{ stored: number; duplicates: number }> {
+  async addMany(
+    drafts: readonly FindingDraft[],
+    options: AddManyOptions = {},
+  ): Promise<{ stored: number; duplicates: number }> {
     if (drafts.length === 0) return { stored: 0, duplicates: 0 };
     const items = await this.load();
     let stored = 0;
@@ -49,6 +66,9 @@ export class FindingsStore {
         const newSample = draft.detail?.sample;
         if (typeof newSample === 'string' && existing.detail?.sample === undefined) {
           existing.detail.sample = newSample;
+        }
+        if (options.mergeDetail) {
+          existing.detail = options.mergeDetail(existing.detail, draft.detail ?? {});
         }
         duplicates += 1;
         continue;

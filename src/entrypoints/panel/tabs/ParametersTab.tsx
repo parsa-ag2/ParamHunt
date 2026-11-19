@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import type { Finding, FindingPage } from '@shared/types/finding';
 import { sendRequest } from '@core/messaging/bridge';
 import { paramName, namesToClipboardText, uniqueParamNames } from '@modules/param-discovery/lib/format';
+import { groupParams, type GroupMode } from './grouping';
 import { Badge, Chip, CopyButton, Empty, Toast, useCopyFlash } from '../ui';
 
 const SOURCE_FILTERS = ['all', 'url', 'dom', 'form', 'js', 'network', 'cookie', 'storage'] as const;
@@ -14,10 +15,12 @@ export default function ParametersTab({
   page,
   error,
   onRefresh,
+  onBuildQuery,
 }: {
   page: FindingPage | null;
   error: string | null;
   onRefresh: () => void;
+  onBuildQuery: (names: string[], path: string) => void;
 }) {
   const [filter, setFilter] = useState('');
   const [source, setSource] = useState<(typeof SOURCE_FILTERS)[number]>('all');
@@ -26,6 +29,9 @@ export default function ParametersTab({
   const [sort, setSort] = useState<'recent' | 'occurrences' | 'name'>('recent');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [view, setView] = useState<'flat' | 'grouped'>('flat');
+  const [groupMode, setGroupMode] = useState<GroupMode>('path');
+  const [collapsePatterns, setCollapsePatterns] = useState(false);
   const [flash, copyError, doCopy] = useCopyFlash();
 
   const items = page?.items ?? [];
@@ -55,6 +61,11 @@ export default function ParametersTab({
   }, [page, filter, source, sort]);
 
   const allNames = useMemo(() => uniqueParamNames(rows), [rows]);
+  /** Group-by-URL runs on ALREADY-COLLECTED data only — memoized, no scans. */
+  const groups = useMemo(
+    () => (view === 'grouped' ? groupParams(rows, { mode: groupMode, collapsePatterns }) : []),
+    [view, rows, groupMode, collapsePatterns],
+  );
 
   const copyRow = (f: Finding) => doCopy(paramName(f), f.id);
   const copyAll = () => doCopy(namesToClipboardText(allNames), '__all__');
@@ -134,6 +145,27 @@ export default function ParametersTab({
         {selected.size > 0 && <span className="text-[10px] text-slate-400">{selected.size} selected</span>}
       </div>
 
+      <div className="flex items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
+        <Chip active={view === 'flat'} onClick={() => setView('flat')}>All Parameters</Chip>
+        <Chip active={view === 'grouped'} onClick={() => setView('grouped')}>Group by URL</Chip>
+        {view === 'grouped' && (
+          <>
+            <span className="mx-1 h-4 w-px bg-slate-700" />
+            <Chip active={groupMode === 'path'} onClick={() => setGroupMode('path')}>by path</Chip>
+            <Chip active={groupMode === 'origin'} onClick={() => setGroupMode('origin')}>by origin</Chip>
+            <Chip active={groupMode === 'method'} onClick={() => setGroupMode('method')}>by method</Chip>
+            <label className="ml-2 flex items-center gap-1 text-[10px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={collapsePatterns}
+                onChange={(e) => setCollapsePatterns(e.target.checked)}
+                className="accent-sky-500"
+              />
+              collapse /users/123 → /users/&#123;id&#125;
+            </label>
+          </>
+        )}
+      </div>
       <div className="border-b border-slate-700 px-3 py-2">
         <input
           value={filter}
@@ -143,9 +175,34 @@ export default function ParametersTab({
         />
       </div>
 
-      {/* table */}
+      {/* table (flat) + grouped-by-URL view */}
       <div className="flex-1 overflow-y-auto">
-        {page === null ? (
+        {view === 'grouped' ? (
+          page === null ? (
+            <Empty label="Loading…" />
+          ) : groups.length === 0 ? (
+            <Empty label="Nothing to group yet — collect parameters first." />
+          ) : (
+            <ul className="text-xs">
+              {groups.slice(0, 100).map((g) => (
+                <GroupRow
+                  key={g.key}
+                  group={g}
+                  mode={groupMode}
+                  flash={flash}
+                  onCopyNames={() => void doCopy(namesToClipboardText(uniqueParamNames(g.items)), `g-${g.key}`)}
+                  onCopyPairs={() =>
+                    void doCopy(
+                      g.items.map((f) => `${paramName(f)}=${String((f.detail as Record<string, unknown>)?.firstSample ?? '')}`).join('\n'),
+                      `gp-${g.key}`,
+                    )
+                  }
+                  onBuild={() => onBuildQuery(uniqueParamNames(g.items), groupMode === 'path' ? g.label : '/')}
+                />
+              ))}
+            </ul>
+          )
+        ) : page === null ? (
           <Empty label="Loading…" />
         ) : rows.length === 0 ? (
           <Empty
@@ -331,5 +388,88 @@ function DetailRow({
         </div>
       </td>
     </tr>
+  );
+}
+
+
+/** Grouped-by-URL row: header with real counts + actions, expandable param list. */
+function GroupRow({
+  group,
+  mode,
+  flash,
+  onCopyNames,
+  onCopyPairs,
+  onBuild,
+}: {
+  group: ReturnType<typeof groupParams>[number];
+  mode: GroupMode;
+  flash: string | null;
+  onCopyNames: () => void;
+  onCopyPairs: () => void;
+  onBuild: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const preview = group.items.slice(0, 5).map((f) => paramName(f));
+  return (
+    <li className="border-t border-slate-800">
+      <div
+        className="flex cursor-pointer items-center gap-2 px-3 py-2 hover:bg-slate-800/60"
+        onClick={() => setOpen(!open)}
+      >
+        <span className="text-slate-500">{open ? '▾' : '▸'}</span>
+        <span className="font-mono text-slate-200">{group.label}</span>
+        <Badge tone="info">{group.items.length} params</Badge>
+        <span className="ml-auto flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+          <CopyButton onCopy={onCopyNames} flashKey={`g-${group.key}`} flash={flash} label="Copy Parameters" />
+          <CopyButton onCopy={onCopyPairs} flashKey={`gp-${group.key}`} flash={flash} label="Copy name=value" />
+          <button
+            onClick={onBuild}
+            className="rounded bg-sky-600 px-1.5 py-0.5 text-[10px] font-medium text-white hover:bg-sky-500"
+          >
+            Build Query
+          </button>
+        </span>
+      </div>
+      {!open && preview.length > 0 && (
+        <div className="px-9 pb-1.5 font-mono text-[11px] text-slate-500">
+          {preview.join(' · ')}
+          {group.items.length > preview.length ? ` · … +${group.items.length - preview.length}` : ''}
+        </div>
+      )}
+      {open && (
+        <table className="w-full text-left text-[11px]">
+          <thead className="bg-slate-800/70 text-slate-400">
+            <tr>
+              <th className="px-9 py-1 font-medium">Parameter</th>
+              <th className="px-2 py-1 font-medium">Source</th>
+              <th className="px-2 py-1 font-medium">Method</th>
+              <th className="px-2 py-1 font-medium">×Seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {group.items.slice(0, 200).map((f) => {
+              const d = f.detail as Record<string, unknown>;
+              const sources = (d.sources ?? {}) as Record<string, number>;
+              return (
+                <tr key={f.id} className="border-t border-slate-800/70">
+                  <td className="px-9 py-1 font-mono text-sky-300">{paramName(f)}</td>
+                  <td className="px-2 py-1">
+                    <span className="flex gap-1">
+                      {Object.keys(sources).map((s) => (
+                        <Badge key={s} tone="info">{s}</Badge>
+                      ))}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1 text-slate-400">
+                    {((d.methods ?? []) as string[]).join(', ') || '—'}
+                  </td>
+                  <td className="px-2 py-1 text-slate-300">{`×${f.occurrences}`}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </li>
   );
 }

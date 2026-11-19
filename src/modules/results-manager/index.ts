@@ -30,7 +30,12 @@ export function createResultsManager(storage: StorageAdapter): {
   handlers: RequestHandlers;
   api: {
     add: (draft: FindingDraft) => Promise<{ duplicate: boolean }>;
-    addMany: (drafts: readonly FindingDraft[]) => Promise<{ stored: number; duplicates: number }>;
+    addMany: (
+      drafts: readonly FindingDraft[],
+      options?: {
+        mergeDetail?: (existing: Record<string, unknown>, incoming: Record<string, unknown>) => Record<string, unknown>;
+      },
+    ) => Promise<{ stored: number; duplicates: number }>;
   };
 } {
   const store = new FindingsStore(storage, STORAGE_KEYS.findings);
@@ -80,8 +85,10 @@ export function createResultsManager(storage: StorageAdapter): {
   /** Exposed for the param-discovery module (single pipeline, no direct UI writes). */
   const api = {
     add: (draft: FindingDraft): Promise<{ duplicate: boolean }> => store.add(draft).then((r) => ({ duplicate: r.duplicate })),
-    addMany: (drafts: readonly FindingDraft[]): Promise<{ stored: number; duplicates: number }> =>
-      store.addMany(drafts),
+    addMany: (
+      drafts: readonly FindingDraft[],
+      options?: { mergeDetail?: (existing: Record<string, unknown>, incoming: Record<string, unknown>) => Record<string, unknown> },
+    ): Promise<{ stored: number; duplicates: number }> => store.addMany(drafts, options),
   };
 
   return { module, handlers, api };

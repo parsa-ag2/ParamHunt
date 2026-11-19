@@ -1,8 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
-  <!-- ParamHunt logo: magnifier over param key -->
-  <rect width="512" height="512" rx="96" fill="#0f172a"/>
-  <circle cx="236" cy="236" r="120" fill="none" stroke="#38bdf8" stroke-width="28"/>
-  <line x1="326" y1="326" x2="416" y2="416" stroke="#38bdf8" stroke-width="28" stroke-linecap="round"/>
-  <text x="236" y="270" font-family="ui-monospace, monospace" font-size="120" font-weight="700"
-        fill="#e2e8f0" text-anchor="middle">?p</text>
+  <!-- ParamHunt logo — magnifier ring over abstract parameter bars -->
+  <rect width="512" height="512" rx="112" fill="#0b1220"/>
+  <circle cx="225" cy="225" r="118" fill="none" stroke="#38bdf8" stroke-width="30"/>
+  <line x1="312" y1="312" x2="424" y2="424" stroke="#38bdf8" stroke-width="30" stroke-linecap="round"/>
+  <rect x="168" y="184" width="114" height="22" rx="11" fill="#e2e8f0"/>
+  <rect x="168" y="242" width="70" height="22" rx="11" fill="#64748b"/>
 </svg>
