@@ -2,7 +2,7 @@
 
 export const APP = {
   name: 'ParamHunt',
-  version: '0.0.1',
+  version: '0.3.0',
   /** Storage key prefix — everything the app persists lives under this. */
   storagePrefix: 'paramhunt:',
 } as const;

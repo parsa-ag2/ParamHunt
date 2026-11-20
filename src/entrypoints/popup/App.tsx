@@ -3,6 +3,7 @@ import { sendRequest } from '@core/messaging/bridge';
 import type { ScopeView } from '@core/messaging/protocol';
 import type { FindingPage } from '@shared/types/finding';
 import { copyText } from '@shared/clipboard';
+import { APP } from '@shared/constants';
 import { namesToClipboardText, paramName, uniqueParamNames } from '@modules/param-discovery/lib/format';
 
 /**
@@ -70,7 +71,7 @@ export default function App() {
       <header className="flex items-center gap-2">
         <img src="/icons/icon-32.png" alt="" className="h-5 w-5 rounded" />
         <h1 className="text-base font-semibold text-slate-100">ParamHunt</h1>
-        <span className="rounded bg-slate-700 px-1.5 text-[10px] uppercase text-slate-300">v0.2.0</span>
+        <span className="rounded bg-slate-700 px-1.5 text-[10px] uppercase text-slate-300">{APP.version}</span>
       </header>
 
       {error && <p className="rounded bg-red-500/10 px-2 py-1 text-xs text-red-300">{error}</p>}

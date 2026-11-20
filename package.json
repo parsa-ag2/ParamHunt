@@ -1,6 +1,6 @@
 {
   "name": "paramhunt",
-  "version": "0.0.1",
+  "version": "0.3.0",
   "private": true,
   "description": "ParamHunt — Chrome MV3 extension for browser-based security research: parameter discovery, HTTP analysis, DOM & JS inspection.",
   "type": "module",
