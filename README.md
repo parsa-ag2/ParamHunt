@@ -23,7 +23,7 @@ A Chrome extension for browser-based security research: it **discovers and catal
 - **Scope control** — observes the current site's origin by default; extend it with an allowlist (domain or glob patterns) and exclusions in Options. Exclusions always win. Out-of-scope pages are never collected.
 - **DevTools workbench** — F12 → *ParamHunt* tab, organized into real views:
   - **Overview** — live counters (parameters, URLs, requests, cookies), engine status
-  - **Parameters** — searchable/sortable table (source, method, type, occurrences, confidence), source filters, detail view with a local value inspector and researcher notes, per-row **Copy**, **Copy All** (unique), **Copy Selected**
+  - **Parameters** — searchable/sortable table (source, method, type, occurrences, **Found At**), source filters, detail view listing every discovery location (script URL + line/column + code snippet — copyable), local value inspector, researcher notes, per-row **Copy**, **Copy All** (unique), **Copy Selected**
   - **URLs** — observed URLs grouped by origin, expandable to parameters, copy URL/path/query/names (sensitive values masked by default)
   - **Requests** — request metadata inspector with a manually-controlled GET replay (destination shown, scope enforced, credentials never replayed)
   - **Cookies** — metadata only (name/domain/path/flags); values are never displayed or copied

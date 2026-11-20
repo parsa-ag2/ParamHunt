@@ -45,7 +45,11 @@ export default defineBackground(() => {
   const urlsStore = new UrlsStore(storage, STORAGE_KEYS.urls);
   const gate = createRequestScopeGate();
   const discovery = createParamDiscovery(results, { urlsStore, noteOrigin: gate.note });
-  const http = createHttpAnalyzer(storage, urlsStore, gate);
+  const http = createHttpAnalyzer(storage, urlsStore, gate, {
+    // NETWORK source: observed request query params flow into the same
+    // dedup/store pipeline (batched flush, scope already checked per request)
+    onNetworkParams: (observations) => discovery.ingestObservations(observations, ''),
+  });
 
   engine.register(results.module);
   engine.register(discovery.module);

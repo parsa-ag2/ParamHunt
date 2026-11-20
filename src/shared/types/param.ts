@@ -6,6 +6,17 @@
  */
 export type ParamSource = 'url' | 'form' | 'dom' | 'js' | 'network' | 'cookie' | 'storage';
 
+/** One concrete discovery location — compact, stored, never a whole file. */
+export interface Evidence {
+  /** Source URL: the page (url/dom/form), the script (js), the request (network). */
+  url?: string;
+  /** 1-based, when the source has lines (JS). Never invented for other sources. */
+  line?: number;
+  column?: number;
+  /** Short human-readable snippet: code line, attribute summary, request line. */
+  snippet?: string;
+}
+
 export type ParamKind =
   | 'query' // URL query string of the current page
   | 'fragment' // query-style params in location.hash (#?token=…)
@@ -43,6 +54,8 @@ export interface ParamObservation {
   confidence: ParamConfidence;
   /** RFC 3339 discovery timestamp. */
   seenAt: string;
+  /** Exact source evidence (script line/col, attribute summary, …). */
+  evidence?: Evidence;
 }
 
 export interface ParamRecord {
@@ -66,4 +79,6 @@ export interface ParamRecord {
    * is merged across scans; first/last page alone would lose the rest.
    */
   urls?: Record<string, number>;
+  /** Distinct discovery locations, deduped, capped (Found At column). */
+  evidence?: Evidence[];
 }

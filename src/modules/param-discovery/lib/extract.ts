@@ -6,7 +6,9 @@
  * ever evaluated. Values are samples, capped, and never replayed.
  */
 import type {
+  Evidence,
   ParamConfidence,
+  ParamKind,
   ParamObservation,
   ParamRecord,
 } from '@shared/types/param';
@@ -55,7 +57,11 @@ export function extractUrlParams(url: string): ParamObservation[] {
   }
   const out: ParamObservation[] = [];
   for (const [name, value] of parsed.searchParams) {
-    const o = obs(name, 'url', 'query', url, { sample: cap(value), confidence: 'high' });
+    const o = obs(name, 'url', 'query', url, {
+      sample: cap(value),
+      confidence: 'high',
+      evidence: { url, snippet: `?${name}=${value}` },
+    });
     if (o) out.push(o);
   }
   // fragment-embedded query (e.g. #access_token=… or #?next=/x)
@@ -69,6 +75,7 @@ export function extractUrlParams(url: string): ParamObservation[] {
           const o = obs(decodeURIComponentSafe(name), 'url', 'fragment', url, {
             sample: cap(decodeURIComponentSafe(value ?? '')),
             confidence: 'high',
+            evidence: { url, snippet: `#${name}=${value ?? ''}` },
           });
           if (o) out.push(o);
         }
@@ -214,6 +221,22 @@ function controlObservation(
   const name = el.getAttribute('name');
   const inputType = el.getAttribute('type') ?? undefined;
 
+  // evidence: compact attribute summary for the Found At view
+  const tag = el.tagName.toLowerCase();
+  const attrs: string[] = [tag];
+  const id = el.getAttribute('id');
+  if (id) attrs.push(`#${id}`);
+  const cls = (el.getAttribute('class') ?? '').split(/\s+/).filter(Boolean).slice(0, 2);
+  if (cls.length) attrs.push(`.${cls.join('.')}`);
+  for (const a of ['name', 'type']) {
+    const v = el.getAttribute(a);
+    if (v) attrs.push(`[${a}="${v}"]`);
+  }
+  const evidence: Evidence = {
+    url: pageUrl,
+    snippet: `<${attrs.join('')}>`,
+  };
+
   // data-param="name" marks a control whose identifier lives in a data attribute
   const dataParam = el.getAttribute('data-param');
   if (dataParam && NAME_RE.test(dataParam)) {
@@ -221,6 +244,7 @@ function controlObservation(
       method,
       inputType,
       confidence: 'low',
+      evidence,
     });
   }
   if (!name) return null;
@@ -239,6 +263,7 @@ function controlObservation(
     inputType,
     sample: cap(rawSample ?? undefined),
     confidence: isHidden || isForm ? 'high' : 'medium',
+    evidence,
   });
 }
 
@@ -251,15 +276,79 @@ const USP_USE = (v: string) =>
 const ANCHORED_OBJ = /(?:params|query|body|payload|filters|fields)\s*:\s*\{/g;
 const OBJ_KEY = /(?:^|[,{])\s*['"]?([A-Za-z_$][\w$-]{1,32})['"]?\s*:/g;
 
-/** Parameter-name patterns inside JS source text. */
-export function extractJsParams(code: string, pageUrl: string): ParamObservation[] {
+/** Minified-code guard: JS-source names shorter than 2 chars are artifacts. */
+const MIN_JS_NAME_LEN = 2;
+
+/**
+ * Line/Column locator — ONE pass to collect line offsets, then O(log n)
+ * binary search per match. Keeps evidence extraction cheap on 1MB bundles.
+ */
+class LineLocator {
+  private readonly lineStarts: number[];
+  private readonly lines: string[];
+  constructor(private readonly code: string) {
+    const starts = [0];
+    const lines: string[] = [];
+    let start = 0;
+    for (let i = 0; i < code.length; i++) {
+      if (code.charCodeAt(i) === 10) {
+        lines.push(code.slice(start, i));
+        start = i + 1;
+        starts.push(i + 1);
+      }
+    }
+    lines.push(code.slice(start));
+    this.lineStarts = starts;
+    this.lines = lines;
+  }
+
+  locate(index: number): { line: number; column: number; snippet: string } {
+    let lo = 0;
+    let hi = this.lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((this.lineStarts[mid] ?? 0) <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    const line = lo + 1; // 1-based
+    const column = index - (this.lineStarts[lo] ?? 0) + 1; // 1-based
+    const raw = this.lines[lo] ?? '';
+    const snippet = raw.length > 160 ? raw.slice(0, 160) : raw;
+    return { line, column, snippet };
+  }
+}
+
+/** Parameter-name patterns inside JS source text (with exact evidence). */
+export function extractJsParams(
+  code: string,
+  pageUrl: string,
+  sourceUrl?: string,
+): ParamObservation[] {
   const out: ParamObservation[] = [];
+  if (code.length === 0) return out;
+  const locator = new LineLocator(code);
+
+  const withEvidence = (
+    name: string,
+    kind: ParamKind,
+    confidence: ParamConfidence,
+    index: number,
+    extra: Partial<ParamObservation> = {},
+  ): void => {
+    if (name.length < MIN_JS_NAME_LEN) return; // minified artifacts stay out
+    const { line, column, snippet } = locator.locate(index);
+    const o = obs(name, 'js', kind, pageUrl, {
+      confidence,
+      evidence: { url: sourceUrl ?? pageUrl, line, column, snippet },
+      ...extra,
+    });
+    if (o) out.push(o);
+  };
 
   for (const m of code.matchAll(QS_IN_STRING)) {
     const name = m[1];
     if (!name) continue;
-    const o = obs(name, 'js', 'js-query', pageUrl, { sample: cap(m[2] ?? ''), confidence: 'medium' });
-    if (o) out.push(o);
+    withEvidence(name, 'js-query', 'medium', m.index ?? 0, { sample: cap(m[2] ?? '') });
   }
 
   for (const vm of code.matchAll(USP_VAR)) {
@@ -269,8 +358,7 @@ export function extractJsParams(code: string, pageUrl: string): ParamObservation
     for (const m of code.matchAll(use)) {
       const name = m[1];
       if (!name) continue;
-      const o = obs(name, 'js', 'js-searchparams', pageUrl, { confidence: 'medium' });
-      if (o) out.push(o);
+      withEvidence(name, 'js-searchparams', 'medium', m.index ?? 0);
     }
   }
 
@@ -280,8 +368,7 @@ export function extractJsParams(code: string, pageUrl: string): ParamObservation
     for (const km of window.matchAll(OBJ_KEY)) {
       const key = km[1];
       if (!key || /^(get|set|value|type|name|length|url|href|method)$/.test(key)) continue;
-      const o = obs(key, 'js', 'js-object', pageUrl, { confidence: 'low' });
-      if (o) out.push(o);
+      withEvidence(key, 'js-object', 'low', start + (km.index ?? 0));
     }
   }
 
@@ -322,6 +409,20 @@ export function collectScriptSrcs(root: Document | Element, pageUrl: string): st
  * Duplicate status surfaces as `occurrences` + per-source counts.
  */
 const MAX_URL_ASSOCIATIONS = 50;
+const MAX_EVIDENCE = 10;
+
+const evidenceKey = (e: Evidence): string =>
+  `${e.url ?? ''}|${e.line ?? ''}|${e.column ?? ''}|${e.snippet ?? ''}`;
+
+/** Deduped, capped evidence list on a record (Found At data). */
+function addEvidence(existing: ParamRecord, o: ParamObservation): void {
+  if (!o.evidence) return;
+  const list = existing.evidence ?? [];
+  const key = evidenceKey(o.evidence);
+  if (list.some((e) => evidenceKey(e) === key)) return;
+  if (list.length >= MAX_EVIDENCE) return; // keep the first 10 distinct locations
+  existing.evidence = [...list, o.evidence];
+}
 
 /** pathname helper cached per scan loop — avoid re-parsing the same URL. */
 function pathnameOf(pageUrl: string, cache: Map<string, string>): string {
@@ -359,6 +460,7 @@ export function dedupeParams(observations: ParamObservation[]): ParamRecord[] {
         firstSeenAt: o.seenAt,
         lastSeenAt: o.seenAt,
         urls: { [path]: 1 },
+        evidence: o.evidence ? [o.evidence] : undefined,
       });
       continue;
     }
@@ -376,6 +478,7 @@ export function dedupeParams(observations: ParamObservation[]): ParamRecord[] {
     existing.confidence = maxC(existing.confidence, o.confidence);
     existing.occurrences += 1;
     existing.lastSeenAt = o.seenAt;
+    addEvidence(existing, o);
   }
   return [...byKey.values()];
 }

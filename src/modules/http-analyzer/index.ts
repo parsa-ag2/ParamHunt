@@ -13,6 +13,7 @@
  */
 import type { MessagePayloads, ParamHuntMessage } from '@core/messaging/protocol';
 import type { RequestRecord } from '@shared/types/http';
+import type { ParamObservation } from '@shared/types/param';
 import type { ModuleDefinition } from '@shared/types/module';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import type { UrlsStore } from '@core/results/urls';
@@ -95,6 +96,7 @@ export function createHttpAnalyzer(
   storage: StorageAdapter,
   urlsStore: UrlsStore,
   gate: RequestScopeGate,
+  deps: { onNetworkParams?: (observations: ParamObservation[]) => Promise<void> } = {},
 ): {
   module: ModuleDefinition;
   handlers: RequestHandlers;
@@ -151,6 +153,49 @@ export function createHttpAnalyzer(
     records = [rec, ...items].slice(0, MAX_REQUESTS); // newest first, ring cap
     persistSoon(); // batched write — never one chrome.storage.set per request
     await urlsStore.addMany([{ url: rec.url, method: normalizeMethod(rec.method), source: 'network' }]);
+    // NETWORK source params: query names with request evidence, batched flush
+    if (deps.onNetworkParams && rec.paramNames.length > 0) {
+      const ts = rec.timestamp;
+      for (const name of rec.paramNames) {
+        pendingNetworkObs.push({
+          name,
+          source: 'network',
+          kind: 'query',
+          pageUrl: rec.url,
+          method: rec.method === 'GET' ? 'GET' : rec.method === 'POST' ? 'POST' : undefined,
+          confidence: 'high',
+          seenAt: ts,
+          evidence: { url: rec.url, snippet: `${rec.method} ${rec.resourceType} (query string)` },
+        });
+      }
+      if (pendingNetworkObs.length >= 40) void flushNetworkParams();
+      else scheduleNetworkFlush();
+    }
+  }
+
+  const pendingNetworkObs: ParamObservation[] = [];
+  let networkFlushTimer: ReturnType<typeof setTimeout> | undefined;
+
+  function scheduleNetworkFlush(): void {
+    if (networkFlushTimer) return;
+    networkFlushTimer = setTimeout(() => {
+      networkFlushTimer = undefined;
+      void flushNetworkParams();
+    }, 2_000);
+  }
+
+  async function flushNetworkParams(): Promise<void> {
+    if (networkFlushTimer) {
+      clearTimeout(networkFlushTimer);
+      networkFlushTimer = undefined;
+    }
+    if (pendingNetworkObs.length === 0 || !deps.onNetworkParams) return;
+    const batch = pendingNetworkObs.splice(0, pendingNetworkObs.length);
+    try {
+      await deps.onNetworkParams(batch);
+    } catch (err) {
+      pipelineError('http-bg', 'error', 'network params ingest failed', err);
+    }
   }
 
   function normalizeMethod(m: string): 'GET' | 'POST' | 'OTHER' {

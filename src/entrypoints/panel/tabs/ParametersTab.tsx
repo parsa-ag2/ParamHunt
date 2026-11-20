@@ -5,9 +5,37 @@ import { paramName, namesToClipboardText, uniqueParamNames } from '@modules/para
 import { groupParams, type GroupMode } from './grouping';
 import { Badge, Chip, CopyButton, Empty, Toast, useCopyFlash } from '../ui';
 
+/** Short "Found At" identifier — the most precise location available. */
+function foundAtLabel(f: Finding): string {
+  const d = f.detail as Record<string, unknown>;
+  const evidence = (d?.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>;
+  const first = evidence[0];
+  if (first?.url && first.line) {
+    let file = first.url;
+    try {
+      file = new URL(first.url).pathname.split('/').pop() || first.url;
+    } catch {
+      // keep raw
+    }
+    return `${file}:${first.line}`;
+  }
+  if (first?.url) {
+    try {
+      return `${new URL(first.url).pathname.split('/').pop() || first.url}`;
+    } catch {
+      return first.url;
+    }
+  }
+  const loc = String(d?.firstPageUrl ?? f.location ?? '');
+  try {
+    return new URL(loc).pathname || loc;
+  } catch {
+    return loc.slice(0, 40);
+  }
+}
+
 const SOURCE_FILTERS = ['all', 'url', 'dom', 'form', 'js', 'network', 'cookie', 'storage'] as const;
 const METHOD_FILTERS = ['all', 'GET', 'POST', 'none'] as const;
-const CONF_FILTERS = ['all', 'high', 'medium', 'low'] as const;
 const MAX_RENDER_ROWS = 300;
 
 /** Parameter Explorer — search/filter/sort/select/copy/inspect/note. */
@@ -25,7 +53,6 @@ export default function ParametersTab({
   const [filter, setFilter] = useState('');
   const [source, setSource] = useState<(typeof SOURCE_FILTERS)[number]>('all');
   const [methodF, setMethodF] = useState<(typeof METHOD_FILTERS)[number]>('all');
-  const [confF, setConfF] = useState<(typeof CONF_FILTERS)[number]>('all');
   const [sort, setSort] = useState<'recent' | 'occurrences' | 'name'>('recent');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -48,9 +75,6 @@ export default function ParametersTab({
         const methods = (f.detail as Record<string, unknown>)?.methods as string[] | undefined;
         return methodF === 'none' ? !methods || methods.length === 0 : (methods ?? []).includes(methodF);
       });
-    }
-    if (confF !== 'all') {
-      out = out.filter((f) => ((f.detail as Record<string, unknown>)?.confidence ?? 'low') === confF);
     }
     const needle = filter.trim().toLowerCase();
     if (needle) out = out.filter((f) => paramName(f).toLowerCase().includes(needle));
@@ -108,12 +132,6 @@ export default function ParametersTab({
         {METHOD_FILTERS.map((m) => (
           <Chip key={m} active={methodF === m} onClick={() => setMethodF(m)}>
             {m}
-          </Chip>
-        ))}
-        <span className="mx-1 h-4 w-px bg-slate-700" />
-        {CONF_FILTERS.map((c) => (
-          <Chip key={c} active={confF === c} onClick={() => setConfF(c)}>
-            {c}
           </Chip>
         ))}
         <select
@@ -223,7 +241,7 @@ export default function ParametersTab({
                   <th className="px-2 py-1.5 font-medium">Method</th>
                   <th className="px-2 py-1.5 font-medium">Type</th>
                   <th className="px-2 py-1.5 font-medium">×Seen</th>
-                  <th className="px-2 py-1.5 font-medium">Conf.</th>
+                  <th className="px-2 py-1.5 font-medium">Found At</th>
                   <th className="w-16 px-2 py-1.5" />
                 </tr>
               </thead>
@@ -268,15 +286,17 @@ export default function ParametersTab({
                         <td className="px-2 py-1.5 text-slate-400">{inputTypes || kinds[0] || '—'}</td>
                         <td className="px-2 py-1.5 text-slate-300">{`×${f.occurrences}`}</td>
                         <td className="px-2 py-1.5">
-                          <Badge tone={(d.confidence as string) === 'high' ? 'ok' : (d.confidence as string) === 'medium' ? 'warn' : 'info'}>
-                            {(d.confidence as string) ?? 'low'}
-                          </Badge>
+                          <span className="block max-w-40 truncate font-mono text-[10px] text-slate-400" title={foundAtLabel(f)}>
+                            {foundAtLabel(f)}
+                          </span>
                         </td>
                         <td className="px-2 py-1.5" onClick={(e) => e.stopPropagation()}>
                           <CopyButton onCopy={() => void copyRow(f)} flashKey={f.id} flash={flash} label="Copy" />
                         </td>
                       </tr>
-                      {open && <DetailRow finding={f} onCopyPair={copyPair} onRefresh={onRefresh} />}
+                      {open && (
+                        <DetailRow finding={f} onCopyPair={copyPair} onRefresh={onRefresh} doCopy={doCopy} flash={flash} />
+                      )}
                     </React.Fragment>
                   );
                 })}
@@ -299,10 +319,14 @@ function DetailRow({
   finding,
   onCopyPair,
   onRefresh,
+  doCopy,
+  flash,
 }: {
   finding: Finding;
   onCopyPair: (f: Finding, value: string) => void;
   onRefresh: () => void;
+  doCopy: (text: string, key: string) => Promise<void>;
+  flash: string | null;
 }) {
   const d = finding.detail as Record<string, unknown>;
   const name = paramName(finding);
@@ -349,6 +373,53 @@ function DetailRow({
             <dt className="text-slate-500">first seen</dt>
             <dd>{new Date(finding.firstSeenAt).toLocaleString()}</dd>
           </dl>
+
+          {/* Found At — every distinct discovery location with exact evidence */}
+          {((d.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>).length >
+            0 && (
+            <div className="space-y-1">
+              <div className="text-[10px] uppercase text-slate-500">Found At — discovery evidence</div>
+              {((d.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>).map(
+                (e, i) => (
+                  <div key={`${e.url}-${e.line}-${i}`} className="rounded bg-slate-900 p-1.5">
+                    <div className="flex items-center gap-2 text-[10px]">
+                      <span className="truncate font-mono text-sky-300" title={e.url}>
+                        {e.url ?? '—'}
+                      </span>
+                      {e.line != null && (
+                        <span className="text-slate-400">
+                          Line {e.line}
+                          {e.column != null ? `, Column ${e.column}` : ''}
+                        </span>
+                      )}
+                      <span
+                        className="ml-auto flex gap-1"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          if (e.url) void doCopy(e.url, `ev-url-${i}`);
+                        }}
+                      >
+                        <CopyButton onCopy={() => void doCopy(e.url ?? '', `ev-url-${i}`)} flashKey={`ev-url-${i}`} flash={flash} label="Copy URL" />
+                        {e.line != null && (
+                          <CopyButton
+                            onCopy={() => void doCopy(`${e.url ?? ''}:${e.line}${e.column != null ? `,${e.column}` : ''}`, `ev-loc-${i}`)}
+                            flashKey={`ev-loc-${i}`}
+                            flash={flash}
+                            label="Copy location"
+                          />
+                        )}
+                      </span>
+                    </div>
+                    {e.snippet && (
+                      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-1 font-mono text-[10px] text-emerald-300">
+                        {e.snippet}
+                      </pre>
+                    )}
+                  </div>
+                ),
+              )}
+            </div>
+          )}
 
           {/* note + triage */}
           <div className="flex items-start gap-2">

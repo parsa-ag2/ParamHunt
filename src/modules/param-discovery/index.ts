@@ -17,6 +17,7 @@ import type { UrlsStore } from '@core/results/urls';
 import { isInScope } from '@shared/scope';
 import { loadSettingsCached, type DiscoveryConfig } from '@shared/settings';
 import { createPipelineLogger, pipelineError } from '@shared/debug';
+import { firstPartyScripts } from './lib/classify';
 import {
   dedupeParams,
   extractJsParams,
@@ -40,6 +41,8 @@ export function createParamDiscovery(
   handlers: RequestHandlers;
   /** Used by the background's webNavigation listener for SPA navigations. */
   triggerScan: (tabId: number) => Promise<MessagePayloads['scan/trigger']>;
+  /** Network-source entry (wired to http-analyzer's request observations). */
+  ingestObservations: (observations: readonly ParamObservation[], pageUrl: string) => Promise<void>;
 } {
   const { api } = results;
 
@@ -98,10 +101,17 @@ export function createParamDiscovery(
     scriptSrcs: readonly string[],
     pageUrl: string,
     config: DiscoveryConfig,
+    pageOrigin?: string,
   ): Promise<ParamObservation[]> {
     if (!config.jsBundles) return []; // user-disabled module
+    // FIRST-PARTY FILTER: classification happens BEFORE any fetch/parse —
+    // vendor + unknown third-party scripts never reach expensive analysis.
+    const pageOriginResolved = pageOrigin ?? (pageUrl ? new URL(pageUrl).origin : '');
+    const eligible = firstPartyScripts(scriptSrcs.slice(0, MAX_BUNDLES), pageOriginResolved);
+    const excluded = scriptSrcs.slice(0, MAX_BUNDLES).length - eligible.length;
+    if (excluded > 0) debugLog('extract', `first-party filter: ${excluded} script(s) excluded`);
     const observations: ParamObservation[] = [];
-    for (const src of scriptSrcs.slice(0, MAX_BUNDLES)) {
+    for (const src of eligible) {
       const cached = bundleCache.get(src);
       if (cached) {
         observations.push(...cached);
@@ -111,7 +121,7 @@ export function createParamDiscovery(
         const res = await fetch(src);
         if (!res.ok) continue;
         const text = (await res.text()).slice(0, MAX_BUNDLE_BYTES);
-        const mined = extractJsParams(text, pageUrl || src);
+        const mined = extractJsParams(text, pageUrl, src); // evidence.url = the bundle itself
         observations.push(...mined);
         bundleCache.set(src, mined);
         if (bundleCache.size > BUNDLE_CACHE_MAX) {
@@ -170,6 +180,16 @@ export function createParamDiscovery(
     const rank: Record<string, number> = { low: 0, medium: 1, high: 2 };
     const confA = String(existing.confidence ?? 'low');
     const confB = String(incoming.confidence ?? 'low');
+    // evidence union: dedup by url|line|col|snippet, cap 10 — the Found At
+    // column must keep every distinct discovery location across scans
+    const evKey = (e: unknown): string => {
+      const o = (e ?? {}) as Record<string, unknown>;
+      return `${o.url ?? ''}|${o.line ?? ''}|${o.column ?? ''}|${o.snippet ?? ''}`;
+    };
+    const mergedEvidence: unknown[] = [
+      ...((existing.evidence ?? []) as unknown[]),
+      ...((incoming.evidence ?? []) as unknown[]).filter((e) => !((existing.evidence ?? []) as unknown[]).some((x) => evKey(x) === evKey(e))),
+    ].slice(0, 10);
     return {
       ...existing,
       sources: mergeCountMap(existing.sources, incoming.sources, 10),
@@ -177,6 +197,7 @@ export function createParamDiscovery(
       methods: unionStrings(existing.methods, incoming.methods),
       inputTypes: unionStrings(existing.inputTypes, incoming.inputTypes),
       urls: mergeCountMap(existing.urls, incoming.urls, 50),
+      evidence: mergedEvidence,
       lastPageUrl: incoming.lastPageUrl ?? existing.lastPageUrl,
       lastSeenAt: incoming.lastSeenAt ?? existing.lastSeenAt,
       confidence: (rank[confA] ?? 0) >= (rank[confB] ?? 0) ? confA : confB,
@@ -196,6 +217,7 @@ export function createParamDiscovery(
         pageUrl,
         confidence: 'low' as const,
         seenAt: ts,
+        evidence: { url: pageUrl, snippet: `domain=${c.domain}; path=${c.path}` },
       }));
     } catch {
       return [];
@@ -212,7 +234,13 @@ export function createParamDiscovery(
     config: DiscoveryConfig,
   ): Promise<{ stored: number; duplicates: number; records: readonly ParamRecord[] }> {
     debugLog('collect', `processing ${observations.length} observations, ${scriptSrcs.length} script refs`, { tabId, pageUrl });
-    const bundleObservations = await mineBundles(scriptSrcs, pageUrl, config);
+    let bundlePageOrigin: string | undefined;
+    try {
+      bundlePageOrigin = pageUrl ? new URL(pageUrl).origin : undefined;
+    } catch {
+      bundlePageOrigin = undefined;
+    }
+    const bundleObservations = await mineBundles(scriptSrcs, pageUrl, config, bundlePageOrigin);
     if (bundleObservations.length > 0) {
       debugLog('extract', `bundle mining added ${bundleObservations.length} observations`);
     }
@@ -358,5 +386,15 @@ export function createParamDiscovery(
     },
   };
 
-  return { module, handlers, triggerScan };
+  /** Network-source entry point (wired by the background to http-analyzer). */
+  async function ingestObservations(
+    observations: readonly ParamObservation[],
+    pageUrl: string,
+  ): Promise<void> {
+    const settings = await loadSettingsCached();
+    if (!settings.discovery.network) return;
+    await processObservations(observations, [], [], undefined, pageUrl, settings.discovery);
+  }
+
+  return { module, handlers, triggerScan, ingestObservations };
 }
