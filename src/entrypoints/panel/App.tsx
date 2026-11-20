@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';import { sendRequest } from '@core/messaging/bridge';
 import { useDevtoolsTabId, useScope, useSiteFindings } from './hooks';
 import { Empty, Toast } from './ui';
+import { findingsToCsv } from '@modules/export-engine/lib/csv';
 import OverviewTab from './tabs/OverviewTab';
 import ParametersTab from './tabs/ParametersTab';
 import BuilderTab from './tabs/BuilderTab';
@@ -37,6 +38,31 @@ export default function Panel() {
     [origin],
   );
 
+  const downloadFile = (content: string, mime: string, ext: string) => {
+    const blob = new Blob([content], { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `paramhunt-${origin.replace(/^https?:\/\//, '').replace(/[^\w.-]+/g, '_') || 'session'}.${ext}`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  const exportCsv = async () => {
+    try {
+      if (!siteFindings || siteFindings.total === 0) {
+        setExportMsg('nothing to export yet');
+        setTimeout(() => setExportMsg(null), 2000);
+        return;
+      }
+      downloadFile(findingsToCsv(siteFindings.items), 'text/csv;charset=utf-8;', 'csv');
+      setExportMsg('CSV exported');
+      setTimeout(() => setExportMsg(null), 2000);
+    } catch (err) {
+      setExportMsg(`export failed: ${err instanceof Error ? err.message : String(err)}`);
+      setTimeout(() => setExportMsg(null), 3000);
+    }
+  };
+
   const exportJson = async () => {
     try {
       const [urls, requests] = await Promise.all([
@@ -52,12 +78,7 @@ export default function Panel() {
         urls: urls.urls,
         requests: requests.requests,
       };
-      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `paramhunt-${origin.replace(/^https?:\/\//, '').replace(/[^\w.-]+/g, '_') || 'session'}.json`;
-      a.click();
-      URL.revokeObjectURL(a.href);
+      downloadFile(JSON.stringify(payload, null, 2), 'application/json', 'json');
       setExportMsg('JSON exported');
       setTimeout(() => setExportMsg(null), 2000);
     } catch (err) {
@@ -114,12 +135,20 @@ export default function Panel() {
             {scope.origin}
           </span>
         ) : null}
+        <span className="ml-auto text-xs text-slate-400">{exportMsg ?? ''}</span>
+        <button
+          onClick={() => void exportCsv()}
+          disabled={(siteFindings?.total ?? 0) === 0}
+          className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50"
+        >
+          Export CSV
+        </button>
         <button
           onClick={() => void exportJson()}
           disabled={(siteFindings?.total ?? 0) === 0}
-          className="ml-auto rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50"
+          className="rounded bg-slate-700 px-2 py-1 text-xs text-slate-200 hover:bg-slate-600 disabled:opacity-50"
         >
-          {exportMsg ?? 'Export JSON'}
+          Export JSON
         </button>
       </header>
 
