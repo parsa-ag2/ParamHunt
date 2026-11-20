@@ -4,6 +4,7 @@
  * docs/MODULE_DESIGN.md#export-engine. Implementation lands per roadmap.
  */
 import type { ModuleDefinition } from '@shared/types/module';
+export { findingsToCsv } from './lib/csv';
 
 export const exportEngineModule: ModuleDefinition = {
   id: 'export-engine',

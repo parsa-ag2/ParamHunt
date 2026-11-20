@@ -136,7 +136,7 @@ describe('storage-write amplification fix (measured)', () => {
 
 describe('bundle-mine cache (measured)', () => {
   it('same bundle URL is fetched exactly once', async () => {
-    const fetchSpy = vi.fn(async () => 'const p = new URLSearchParams(location.search); const x = p.get("page");');
+    const fetchSpy = vi.fn(async (_u: string) => 'const p = new URLSearchParams(location.search); const x = p.get("page");');
     const cache = new BundleMineCache();
     const first = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, fetchSpy as never);
     const second = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, fetchSpy as never);
@@ -165,12 +165,13 @@ describe('first-party filter reaches the analysis stage (no fetch for excluded)'
       'https://code.jquery.com/jquery-3.6.0.min.js',   // vendor → never fetched
       'https://tracker.io/pixel.js',                   // unknown → never fetched
     ];
-    const fetchSpy = vi.fn(async () => 'const p = new URLSearchParams(location.search); const x = p.get("page");');
+    const fetchSpy = vi.fn(async (_u: string) => 'const p = new URLSearchParams(location.search); const x = p.get("page");');
     const cache = new BundleMineCache();
     // apply the classification exactly like the background pipeline does
     const eligible = srcs.filter((s) => classifyScript(s, 'https://market.example.com') === 'first-party');
     await cache.mine(eligible, 'https://market.example.com/', extractJsParams, fetchSpy as never);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(fetchSpy.mock.calls[0]?.[0]).toBe('https://market.example.com/assets/app.js');
+    const firstCall = fetchSpy.mock.calls[0]?.[0] as string | undefined;
+    expect(firstCall).toBe('https://market.example.com/assets/app.js');
   });
 });
