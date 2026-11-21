@@ -4,12 +4,12 @@
  * Ring-buffer keyed by URL; occurrences merge across sightings.
  */
 import type { StorageAdapter } from '../storage/StorageAdapter';
-import type { UrlRecord } from '@shared/types/http';
+import type { UrlRecord, UrlSource } from '@shared/types/http';
 
 export interface UrlInput {
   url: string;
   method?: 'GET' | 'POST' | 'OTHER';
-  source: 'page' | 'network';
+  source: UrlSource;
 }
 
 export class UrlsStore {
@@ -41,8 +41,8 @@ export class UrlsStore {
       if (existing) {
         existing.occurrences += 1;
         existing.lastSeenAt = new Date().toISOString();
-        if (input.source === 'network' && existing.source === 'page') {
-          existing.source = 'network'; // network sighting is the stronger evidence
+        if (!existing.sources.includes(input.source)) {
+          existing.sources.push(input.source); // preserve ALL discovery sources
         }
         updated += 1;
         continue;
@@ -53,7 +53,7 @@ export class UrlsStore {
         origin: parsed.origin,
         path: parsed.pathname,
         method: input.method ?? 'GET',
-        source: input.source,
+        sources: [input.source],
         paramNames: [...parsed.searchParams.keys()],
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
@@ -108,7 +108,15 @@ export class UrlsStore {
   private async load(): Promise<UrlRecord[]> {
     if (this.cache) return this.cache;
     const bag = await this.storage.get(this.key);
-    this.cache = Array.isArray(bag) ? (bag as UrlRecord[]) : [];
+    const items = Array.isArray(bag) ? (bag as UrlRecord[]) : [];
+    // migration: pre-v0.4 records stored a single `source` field
+    for (const r of items) {
+      if (!Array.isArray(r.sources)) {
+        const legacy = (r as unknown as { source?: string }).source;
+        r.sources = legacy ? [legacy as UrlSource] : ['other'];
+      }
+    }
+    this.cache = items;
     return this.cache;
   }
 

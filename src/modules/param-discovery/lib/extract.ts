@@ -283,7 +283,7 @@ const MIN_JS_NAME_LEN = 2;
  * Line/Column locator — ONE pass to collect line offsets, then O(log n)
  * binary search per match. Keeps evidence extraction cheap on 1MB bundles.
  */
-class LineLocator {
+export class LineLocator {
   private readonly lineStarts: number[];
   private readonly lines: string[];
   constructor(private readonly code: string) {
@@ -373,6 +373,103 @@ export function extractJsParams(
   }
 
   return out;
+}
+
+// ─── URL catalog extraction (PHASE 2 — comprehensive sources) ────────────────
+
+export interface UrlCatalogEntry {
+  url: string;
+  source: 'page' | 'link' | 'form' | 'script' | 'inline-js' | 'meta' | 'embed' | 'other';
+  evidence: { url: string; snippet?: string };
+}
+
+const URL_ATTR_SELECTOR =
+  'a[href], form[action], script[src], link[href], iframe[src], img[src], source[src], video[src], audio[src], embed[src], [data-url], [data-src], [data-href]';
+const SCHEME_OK = /^https?:\/\//i;
+
+/** Collect catalog URLs from the live document (same-origin + first-party domains). */
+export function collectCatalogUrls(doc: Document, pageUrl: string, isEligibleDomain: (u: string) => boolean): UrlCatalogEntry[] {
+  const out = new Map<string, UrlCatalogEntry>();
+  const base = docBase(doc, pageUrl);
+  const add = (raw: string | null, source: UrlCatalogEntry['source'], evidenceSnippet?: string): void => {
+    if (!raw) return;
+    try {
+      const abs = new URL(raw, base);
+      if (!SCHEME_OK.test(abs.href)) return;
+      if (!isEligibleDomain(abs.href)) return;
+      if (out.has(abs.href)) return;
+      out.set(abs.href, { url: abs.href, source, evidence: { url: pageUrl, snippet: evidenceSnippet } });
+    } catch {
+      // unresolvable — skip
+    }
+  };
+
+  add(pageUrl, 'page');
+  for (const el of doc.querySelectorAll(URL_ATTR_SELECTOR)) {
+    const tag = el.tagName.toLowerCase();
+    const raw = el.getAttribute('href') ?? el.getAttribute('src') ?? el.getAttribute('action') ?? el.getAttribute('data-url') ?? el.getAttribute('data-src') ?? el.getAttribute('data-href');
+    if (!raw || raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('#')) continue;
+    let source: UrlCatalogEntry['source'] = 'other';
+    let snip = `${tag} ${raw.slice(0, 100)}`;
+    if (tag === 'a') source = 'link';
+    else if (tag === 'form') source = 'form';
+    else if (tag === 'script') source = 'script';
+    else if (tag === 'iframe' || tag === 'img' || tag === 'video' || tag === 'audio' || tag === 'embed' || tag === 'source') {
+      source = 'embed';
+    } else if (tag === 'link') {
+      const rel = el.getAttribute('rel') ?? '';
+      if (rel === 'canonical') snip = `canonical ${raw.slice(0, 100)}`;
+      source = 'meta';
+    } else if (tag.startsWith('data-')) {
+      source = 'other';
+    } else if (tag.startsWith('data-') || el.hasAttribute('data-url') || el.hasAttribute('data-src') || el.hasAttribute('data-href')) {
+      source = 'other';
+    }
+    add(raw, source, snip);
+  }
+
+  // canonical + meta refresh (explicit evidence)
+  for (const m of doc.querySelectorAll('meta[http-equiv="refresh" i]')) {
+    const content = m.getAttribute('content') ?? '';
+    const urlMatch = content.match(/url=([^;]+)/i);
+    const refreshTarget = urlMatch?.[1]?.trim();
+    if (refreshTarget) add(refreshTarget, 'meta', `meta refresh ${content.slice(0, 100)}`);
+  }
+
+  // JS string literals: absolute URLs + fetch/XHR paths (bounded)
+  for (const code of collectInlineScripts(doc)) {
+    const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
+    for (const u of jsStringUrls(bounded, pageUrl)) add(u, 'inline-js', 'inline script');
+  }
+
+  return [...out.values()];
+}
+
+/** URL strings inside JS text: absolute + fetch/xhr/axios path patterns. */
+export function jsStringUrls(code: string, pageUrl: string): string[] {
+  const found = new Set<string>();
+  const abs = /["'`](https?:\/\/[^"'`\s]{4,300})["'`]/g;
+  for (const m of code.matchAll(abs)) {
+    const u0 = m[1] ?? '';
+    try {
+      const u = new URL(u0, pageUrl);
+      if (SCHEME_OK.test(u.href)) found.add(u.href);
+    } catch {
+      // skip
+    }
+  }
+  // relative fetch/xhr/axios path literals
+  const rel = /(?:fetch\s*\(\s*|\.open\s*\(\s*["'`][A-Z]+["'`]\s*,\s*|axios\s*\.\s*\w+\s*\(\s*)(["'`])(\/[A-Za-z0-9_@:%.\-~{}][^"'`\s]{1,280})\1/g;
+  for (const m of code.matchAll(rel)) {
+    const r1 = m[2] ?? '';
+    try {
+      const u = new URL(r1, pageUrl);
+      found.add(u.href);
+    } catch {
+      // skip
+    }
+  }
+  return [...found];
 }
 
 // ─── Helpers used by the content script ─────────────────────────────────────
