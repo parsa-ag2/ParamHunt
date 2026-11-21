@@ -9,8 +9,7 @@
  */
 import type { Finding, FindingPage, FindingQuery } from '@shared/types/finding';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
-import type { CookieMeta, RequestRecord, StorageKeyMeta, UrlRecord } from '@shared/types/http';
-import type { ModuleId, ModuleStatus } from '@shared/types/module';
+import type { CookieMeta, EndpointRecord, StorageKeyMeta, UrlRecord } from '@shared/types/http';
 
 /** Scope view sent to UIs. */
 export interface ScopeView {
@@ -23,8 +22,6 @@ export interface ScopeView {
 
 /** Request/response contract between popup, devtools, content and background. */
 export type ParamHuntMessage =
-  // -- engine ---------------------------------------------------------------
-  | { type: 'engine/status'; requestId: string }
   // -- findings (popup/devtools -> background) ------------------------------
   | { type: 'findings/query'; requestId: string; query: FindingQuery }
   | { type: 'findings/status'; requestId: string; ids: readonly string[]; status: Finding['status'] }
@@ -41,6 +38,8 @@ export type ParamHuntMessage =
       scriptSrcs: readonly string[];
       /** URLs seen on the page (links, form actions) for the URL catalog. */
       urls: readonly string[];
+      /** Endpoint candidates mined from INLINE scripts (content-side pass). */
+      endpoints: readonly import('@shared/types/http').EndpointCandidateLike[];
     }
   | {
       type: 'scan/trigger';
@@ -51,18 +50,12 @@ export type ParamHuntMessage =
   | { type: 'scan/run'; requestId: string }
   // -- scope -----------------------------------------------------------------
   | { type: 'scope/get'; requestId: string; tabId: number }
-  // -- HTTP observatory -------------------------------------------------------
-  | { type: 'http/query'; requestId: string; origin?: string }
-  | { type: 'http/clear'; requestId: string }
-  /**
-   * MANUAL replay of an observed GET request. The message itself is the
-   * explicit user action; scope is re-checked here; cookies/credentials are
-   * NOT replayed (credentials: 'omit'), and bodies are never sent.
-   */
-  | { type: 'http/replay'; requestId: string; url: string }
   // -- URL catalog -------------------------------------------------------------
   | { type: 'urls/query'; requestId: string; origin?: string }
   | { type: 'urls/clear'; requestId: string }
+  // -- endpoint catalog --------------------------------------------------------
+  | { type: 'endpoints/query'; requestId: string; origin?: string }
+  | { type: 'endpoints/clear'; requestId: string }
   // -- cookies (metadata only — values never leave the browser jar) -----------
   | { type: 'cookies/query'; requestId: string; tabId: number }
   // -- browser storage keys (values never collected) --------------------------
@@ -90,7 +83,6 @@ export type ParamHuntResponse<T = unknown> =
 
 /** Per-type response payloads (kept explicit for strong typing at call sites). */
 export interface MessagePayloads {
-  'engine/status': { running: boolean; modules: readonly { id: ModuleId; status: ModuleStatus }[] };
   'findings/query': FindingPage;
   'findings/status': { updated: number };
   'findings/remove': { removed: number };
@@ -110,10 +102,9 @@ export interface MessagePayloads {
   };
   'scan/run': { observations: number; scriptSrcs: number; scope: ScopeDecisionView };
   'scope/get': ScopeView;
-  'http/query': { requests: RequestRecord[]; total: number };
-  'http/clear': { cleared: number };
-  'http/replay': { status: number; statusText: string; contentType?: string; bodyPreview?: string; finalUrl?: string; error?: string };
   'urls/query': { urls: UrlRecord[]; total: number };
+  'endpoints/query': { endpoints: EndpointRecord[]; total: number };
+  'endpoints/clear': { cleared: number };
   'urls/clear': { cleared: number };
   'cookies/query': { cookies: CookieMeta[] };
   'storage/inspect': { entries: StorageKeyMeta[] };

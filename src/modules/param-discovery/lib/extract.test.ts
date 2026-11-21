@@ -162,3 +162,62 @@ describe('dedupeParams', () => {
     expect(r?.lastSeenAt).toBe(at(3));
   });
 });
+
+import { collectCatalogUrls } from './extract';
+
+describe('collectCatalogUrls (comprehensive URL discovery)', () => {
+  function docFrom(html: string): Document {
+    document.body.innerHTML = html;
+    return document;
+  }
+  const eligible = (u: string) => u.includes('target.example.com') || u.includes('assets.example.com');
+
+  it('collects page/links/forms/scripts/iframes/canonical/meta-refresh/data-urls', () => {
+    const doc = docFrom(`
+      <link rel="canonical" href="https://target.example.com/canonical">
+      <meta http-equiv="refresh" content="3; url=/refreshed">
+      <a href="/products?category=10">p</a>
+      <form action="/checkout?step=1"></form>
+      <script src="/assets/app.js"></script>
+      <iframe src="https://assets.example.com/embed"></iframe>
+      <img src="/img/logo.png">
+      <div data-url="https://target.example.com/data-url"></div>
+      <a href="https://google.com/x">external — must NOT be collected</a>
+    `);
+    const urls = collectCatalogUrls(doc, PAGE, eligible).map((e) => e.url);
+    expect(urls).toContain(PAGE); // page
+    expect(urls).toContain('https://target.example.com/products?category=10');
+    expect(urls).toContain('https://target.example.com/checkout?step=1');
+    expect(urls).toContain('https://target.example.com/assets/app.js');
+    expect(urls).toContain('https://assets.example.com/embed'); // first-party CDN
+    expect(urls).toContain('https://target.example.com/img/logo.png');
+    expect(urls).toContain('https://target.example.com/data-url');
+    expect(urls).toContain('https://target.example.com/canonical');
+    expect(urls).toContain('https://target.example.com/refreshed');
+    expect(urls.some((u) => u.includes('google.com'))).toBe(false); // scope isolation
+  });
+
+  it('inline JS literals: fetch/xhr paths and absolute urls', () => {
+    const doc = docFrom(`
+      <script>
+        fetch("/api/v2/items");
+        xhr.open("POST", "/api/submit");
+        axios.get("https://target.example.com/api/list");
+      </script>
+    `);
+    const urls = collectCatalogUrls(doc, PAGE, eligible).map((e) => e.url);
+    expect(urls).toContain('https://target.example.com/api/v2/items');
+    expect(urls).toContain('https://target.example.com/api/submit');
+    expect(urls).toContain('https://target.example.com/api/list');
+  });
+
+  it('source labels are recorded (page/link/form/script/meta)', () => {
+    const doc = docFrom(`<a href="/p1"></a><form action="/p2"></form><script src="/p3.js"></script>`);
+    const rows = collectCatalogUrls(doc, PAGE, eligible);
+    console.log('CATALOG:', JSON.stringify(rows));
+    const map = Object.fromEntries(rows.map((r) => [r.url, r.source]));
+    expect(map['https://target.example.com/p1']).toBe('link');
+    expect(map['https://target.example.com/p2']).toBe('form');
+    expect(map['https://target.example.com/p3.js']).toBe('script');
+  });
+});

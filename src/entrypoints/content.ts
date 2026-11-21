@@ -23,6 +23,7 @@ import { isInScope } from '@shared/scope';
 import { loadSettingsCached, watchSettings, type ScopeSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
 import {
+  collectCatalogUrls,
   collectInlineScripts,
   collectScriptSrcs,
   extractDomParams,
@@ -30,6 +31,8 @@ import {
   extractJsParams,
   extractUrlParams,
 } from '@modules/param-discovery/lib/extract';
+import { extractEndpoints } from '@modules/param-discovery/lib/endpoints';
+import type { EndpointCandidateLike } from '@shared/types/http';
 import type { ParamObservation } from '@shared/types/param';
 
 const RESCAN_DEBOUNCE_MS = 1200;
@@ -97,11 +100,12 @@ export default defineContentScript({
       observations: ParamObservation[];
       scriptSrcs: string[];
       urls: string[];
+      endpoints: EndpointCandidateLike[];
     }> {
       const pageUrl = location.href;
       if (!(await scopeAllows(pageUrl))) {
         log('collect', 'out of scope — no collection', { pageUrl });
-        return { ok: false, observations: [], scriptSrcs: [], urls: [] };
+        return { ok: false, observations: [], scriptSrcs: [], urls: [], endpoints: [] };
       }
       if (!settings) settings = await loadSettingsCached();
 
@@ -111,9 +115,14 @@ export default defineContentScript({
       ];
       for (const o of observations) remember(o);
 
+      let inlineEndpoints: EndpointCandidateLike[] = [];
       for (const code of collectInlineScripts(document)) {
         const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
         for (const o of extractJsParams(bounded, pageUrl)) if (remember(o)) observations.push(o);
+        // endpoint candidates from inline scripts (same text, same pass)
+        inlineEndpoints = inlineEndpoints.concat(
+          extractEndpoints(bounded, { pageUrl, source: 'inline-js' }),
+        );
       }
 
       // mark all currently-present elements as processed (incremental baseline)
@@ -151,8 +160,21 @@ export default defineContentScript({
         }
       }
 
-      log('collect', `full scan: ${observations.length} observations`, { pageUrl, scriptSrcs: scriptSrcs.length });
-      return { ok: true, observations, scriptSrcs, urls: [] };
+      // comprehensive URL catalog: page, links, forms, scripts, embeds,
+      // meta/canonical, data-URL attributes, inline-JS literals (same pass,
+      // zero extra scans — one bounded query over URL-carrying elements)
+      const settingsNow = settings ?? (await loadSettingsCached());
+      const catalogUrls = collectCatalogUrls(document, pageUrl, (u) => {
+        // same-origin always; allowlisted domains too (eligibility mirror)
+        const scope = isInScope(u, {
+          currentOrigin: location.origin,
+          allowlist: settingsNow.allowlist,
+          exclusions: settingsNow.exclusions,
+        });
+        return scope.inScope;
+      });
+      log('collect', `full scan: ${observations.length} observations, ${catalogUrls.length} catalog URLs, ${inlineEndpoints.length} endpoint candidates`, { pageUrl, scriptSrcs: scriptSrcs.length });
+      return { ok: true, observations, scriptSrcs, urls: catalogUrls.map((c) => c.url), endpoints: inlineEndpoints.slice(0, 50) };
     }
 
     /** Incremental scan — ONLY the pending added subtrees. */
@@ -191,6 +213,7 @@ export default defineContentScript({
       observations: ParamObservation[],
       scriptSrcs: string[],
       pageUrl: string,
+      endpoints: EndpointCandidateLike[] = [],
     ): Promise<void> {
       try {
         const summary = await sendRequest<{ stored: number; duplicates: number }>({
@@ -198,6 +221,7 @@ export default defineContentScript({
           observations,
           scriptSrcs,
           urls: pageUrl === location.href ? [location.href] : [],
+          endpoints,
         });
         log('report', `stored ${summary.stored} new, ${summary.duplicates} known`, { pageUrl });
       } catch (err) {
@@ -215,7 +239,7 @@ export default defineContentScript({
         const result = await fullScan();
         lastScanAt = Date.now();
         if (!result.ok) return;
-        await report(result.observations, result.scriptSrcs, location.href);
+        await report(result.observations, result.scriptSrcs, location.href, result.endpoints);
       } catch (err) {
         pipelineError('content', 'error', `scan/report failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
@@ -263,9 +287,16 @@ export default defineContentScript({
         if (!processedElements.has(el) && unprocessed.length < MAX_NODES_PER_BATCH) unprocessed.push(el);
       }
       const observations: ParamObservation[] = [];
+      let endpoints: EndpointCandidateLike[] = [];
       for (const node of unprocessed) {
         for (const o of extractFromNode(node, location.href, document, processedElements)) {
           if (remember(o)) observations.push(o);
+        }
+        if (node.tagName === 'SCRIPT') {
+          const code = (node as HTMLScriptElement).textContent ?? '';
+          if (code.trim() && code.length <= MAX_INLINE_SCRIPT_CHARS) {
+            endpoints = endpoints.concat(extractEndpoints(code, { pageUrl: location.href, source: 'inline-js' }));
+          }
         }
       }
       const scriptSrcs = collectScriptSrcs(document, location.href).filter((s) => {

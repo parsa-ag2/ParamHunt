@@ -1,1 +1,0 @@
-var e={name:`ParamHunt`,version:`0.3.0`,storagePrefix:`paramhunt:`},t={engineState:`${e.storagePrefix}engine-state`,findings:`${e.storagePrefix}findings`,settings:`${e.storagePrefix}settings`,requests:`${e.storagePrefix}requests`,urls:`${e.storagePrefix}urls`};export{t as n,e as t};

@@ -14,6 +14,7 @@ import type { MessagePayloads, ParamHuntMessage, ScopeView } from '@core/messagi
 import type { FindingDraft, ModuleDefinition } from '@shared/types/module';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
 import type { UrlsStore } from '@core/results/urls';
+import type { EndpointsStore } from '@core/results/endpoints';
 import { isInScope } from '@shared/scope';
 import { loadSettingsCached, type DiscoveryConfig } from '@shared/settings';
 import { createPipelineLogger, pipelineError } from '@shared/debug';
@@ -22,6 +23,8 @@ import {
   dedupeParams,
   extractJsParams,
 } from './lib/extract';
+import { extractEndpoints } from './lib/endpoints';
+import type { EndpointCandidate } from './lib/endpoints';
 import type { RequestHandlers } from '../results-manager';
 import type { ResultsManager } from '../results-manager';
 import { broadcastEvent } from '@core/messaging/bridge';
@@ -35,7 +38,7 @@ const debugLog = createPipelineLogger('discovery-bg');
 
 export function createParamDiscovery(
   results: ResultsManager,
-  deps: { urlsStore: UrlsStore; noteOrigin: (origin: string) => void },
+  deps: { urlsStore: UrlsStore; endpointsStore: EndpointsStore; noteOrigin: (origin: string) => void },
 ): {
   module: ModuleDefinition;
   handlers: RequestHandlers;
@@ -94,7 +97,7 @@ export function createParamDiscovery(
    * downloaded and analyzed exactly once per service-worker lifetime, no
    * matter how many scans report it. Reads config: discovery.jsBundles.
    */
-  const bundleCache = new Map<string, ParamObservation[]>();
+  const bundleCache = new Map<string, { params: ParamObservation[]; endpoints: EndpointCandidate[] }>();
   const BUNDLE_CACHE_MAX = 50;
 
   async function mineBundles(
@@ -102,28 +105,37 @@ export function createParamDiscovery(
     pageUrl: string,
     config: DiscoveryConfig,
     pageOrigin?: string,
-  ): Promise<ParamObservation[]> {
-    if (!config.jsBundles) return []; // user-disabled module
+  ): Promise<{ params: ParamObservation[]; endpoints: EndpointCandidate[] }> {
+    if (!config.jsBundles) return { params: [], endpoints: [] }; // user-disabled
     // FIRST-PARTY FILTER: classification happens BEFORE any fetch/parse —
     // vendor + unknown third-party scripts never reach expensive analysis.
     const pageOriginResolved = pageOrigin ?? (pageUrl ? new URL(pageUrl).origin : '');
     const eligible = firstPartyScripts(scriptSrcs.slice(0, MAX_BUNDLES), pageOriginResolved);
     const excluded = scriptSrcs.slice(0, MAX_BUNDLES).length - eligible.length;
     if (excluded > 0) debugLog('extract', `first-party filter: ${excluded} script(s) excluded`);
-    const observations: ParamObservation[] = [];
+    const params: ParamObservation[] = [];
+    let endpoints: EndpointCandidate[] = [];
     for (const src of eligible) {
       const cached = bundleCache.get(src);
       if (cached) {
-        observations.push(...cached);
+        params.push(...cached.params);
+        endpoints = endpoints.concat(cached.endpoints);
         continue;
       }
       try {
         const res = await fetch(src);
         if (!res.ok) continue;
         const text = (await res.text()).slice(0, MAX_BUNDLE_BYTES);
-        const mined = extractJsParams(text, pageUrl, src); // evidence.url = the bundle itself
-        observations.push(...mined);
-        bundleCache.set(src, mined);
+        // ONE mining pass per bundle: params + endpoints from the same text
+        const minedParams = extractJsParams(text, pageUrl, src);
+        const minedEndpoints = extractEndpoints(text, {
+          pageUrl,
+          sourceUrl: src,
+          source: 'js-bundle',
+        });
+        params.push(...minedParams);
+        endpoints = endpoints.concat(minedEndpoints);
+        bundleCache.set(src, { params: minedParams, endpoints: minedEndpoints });
         if (bundleCache.size > BUNDLE_CACHE_MAX) {
           const oldest = bundleCache.keys().next().value;
           if (oldest) bundleCache.delete(oldest); // LRU eviction
@@ -132,7 +144,7 @@ export function createParamDiscovery(
         // unreachable bundle (CORS-less, offline) — skip, never fabricate
       }
     }
-    return observations;
+    return { params, endpoints };
   }
 
   /** Turn deduplicated records into findings drafts (param-centric dedup). */
@@ -224,11 +236,12 @@ export function createParamDiscovery(
     }
   }
 
-  /** Shared pipeline for both params/report and scan/trigger paths. */
+  /** Shared pipeline for params/report and scan/trigger paths. */
   async function processObservations(
     observations: readonly ParamObservation[],
     scriptSrcs: readonly string[],
     urls: readonly string[],
+    contentEndpoints: readonly import('./lib/endpoints').EndpointCandidate[],
     tabId: number | undefined,
     pageUrl: string,
     config: DiscoveryConfig,
@@ -240,7 +253,8 @@ export function createParamDiscovery(
     } catch {
       bundlePageOrigin = undefined;
     }
-    const bundleObservations = await mineBundles(scriptSrcs, pageUrl, config, bundlePageOrigin);
+    const mined = await mineBundles(scriptSrcs, pageUrl, config, bundlePageOrigin);
+    const bundleObservations = mined.params;
     if (bundleObservations.length > 0) {
       debugLog('extract', `bundle mining added ${bundleObservations.length} observations`);
     }
@@ -259,6 +273,31 @@ export function createParamDiscovery(
       const added = await deps.urlsStore.addMany(urls.map((u) => ({ url: u, source: 'page' as const })));
       debugLog('store', `url catalog: ${added} new URLs`);
     }
+    // ENDPOINT catalog: bundle-mined + content-reported candidates
+    const endpointInputs = [
+      ...mined.endpoints.map((e) => ({
+        url: e.url,
+        path: e.path,
+        method: e.method,
+        methodConfidence: e.methodConfidence,
+        category: e.category,
+        source: e.source,
+        evidence: e.evidence,
+      })),
+      ...contentEndpoints.map((e) => ({
+        url: e.url,
+        path: e.path,
+        method: e.method,
+        methodConfidence: e.methodConfidence,
+        category: e.category,
+        source: e.source,
+        evidence: e.evidence,
+      })),
+    ];
+    if (endpointInputs.length > 0) {
+      const added = await deps.endpointsStore.addMany(endpointInputs);
+      debugLog('store', `endpoint catalog: ${added} new endpoints from ${endpointInputs.length} candidates`);
+    }
     debugLog('store', `stored ${stored} new, ${duplicates} known (occurrences updated)`);
     // ONE broadcast per batch — UIs refresh once, not per finding
     broadcastEvent({ type: 'findings/changed' });
@@ -270,14 +309,20 @@ export function createParamDiscovery(
     observations: ParamObservation[];
     scriptSrcs: string[];
     urls: string[];
+    endpoints: import('./lib/endpoints').EndpointCandidate[];
   } | null> {
     try {
       const reply = await chrome.tabs.sendMessage<
         { type: 'scan/run'; requestId: string },
-        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[]; urls: string[] } }
+        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[]; urls: string[]; endpoints: import('./lib/endpoints').EndpointCandidate[] } }
       >(tabId, { type: 'scan/run', requestId });
       if (reply?.ok && reply.data) {
-        return { observations: reply.data.observations, scriptSrcs: reply.data.scriptSrcs, urls: reply.data.urls ?? [] };
+        return {
+          observations: reply.data.observations,
+          scriptSrcs: reply.data.scriptSrcs,
+          urls: reply.data.urls ?? [],
+          endpoints: reply.data.endpoints ?? [],
+        };
       }
       return null;
     } catch {
@@ -298,7 +343,15 @@ export function createParamDiscovery(
     if (direct) {
       if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
       const settings = await loadSettingsCached();
-      const result = await processObservations(direct.observations, direct.scriptSrcs, direct.urls ?? [], tabId, tab.url ?? '', settings.discovery);
+      const result = await processObservations(
+        direct.observations,
+        direct.scriptSrcs,
+        direct.urls ?? [],
+        direct.endpoints ?? [],
+        tabId,
+        tab.url ?? '',
+        settings.discovery,
+      );
       return {
         status: 'collected',
         observations: result.records.length,
@@ -328,7 +381,7 @@ export function createParamDiscovery(
     if (retry) {
       if (tab.url) deps.noteOrigin(new URL(tab.url).origin);
       const settings = await loadSettingsCached();
-      const result = await processObservations(retry.observations, retry.scriptSrcs, retry.urls, tabId, tab.url ?? '', settings.discovery);
+      const result = await processObservations(retry.observations, retry.scriptSrcs, retry.urls, retry.endpoints ?? [], tabId, tab.url ?? '', settings.discovery);
       return {
         status: 'injected',
         observations: result.records.length,
@@ -359,6 +412,7 @@ export function createParamDiscovery(
         [...msg.observations, ...cookieObservations],
         msg.scriptSrcs,
         msg.urls,
+        msg.endpoints ?? [],
         tabId,
         pageUrl,
         settings.discovery,
@@ -393,7 +447,7 @@ export function createParamDiscovery(
   ): Promise<void> {
     const settings = await loadSettingsCached();
     if (!settings.discovery.network) return;
-    await processObservations(observations, [], [], undefined, pageUrl, settings.discovery);
+    await processObservations(observations, [], [], [], undefined, pageUrl, settings.discovery);
   }
 
   return { module, handlers, triggerScan, ingestObservations };

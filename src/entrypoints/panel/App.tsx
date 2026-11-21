@@ -6,11 +6,10 @@ import OverviewTab from './tabs/OverviewTab';
 import ParametersTab from './tabs/ParametersTab';
 import BuilderTab from './tabs/BuilderTab';
 import UrlsTab from './tabs/UrlsTab';
-import RequestsTab from './tabs/RequestsTab';
 import CookiesTab from './tabs/CookiesTab';
 import StorageTab from './tabs/StorageTab';
 import FindingsTab from './tabs/FindingsTab';
-import SourcesTab from './tabs/SourcesTab';
+import EndpointsTab from './tabs/EndpointsTab';
 
 /**
  * Panel shell — tabbed workbench (dark, DevTools-consistent):
@@ -18,7 +17,7 @@ import SourcesTab from './tabs/SourcesTab';
  * Export downloads the site's findings as JSON (real collected data only).
  */
 
-const TABS = ['Overview', 'Parameters', 'Builder', 'URLs', 'Requests', 'Cookies', 'Storage', 'Findings', 'Sources'] as const;
+const TABS = ['Overview', 'Parameters', 'URLs', 'Endpoints', 'Builder', 'Cookies', 'Storage', 'Findings'] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Panel() {
@@ -65,18 +64,18 @@ export default function Panel() {
 
   const exportJson = async () => {
     try {
-      const [urls, requests] = await Promise.all([
+      const [urls, endpoints] = await Promise.all([
         sendRequest<{ urls: unknown[] }>({ type: 'urls/query', ...(origin ? { origin } : {}) }),
-        sendRequest<{ requests: unknown[] }>({ type: 'http/query', ...(origin ? { origin } : {}) }),
+        sendRequest<{ endpoints: unknown[] }>({ type: 'endpoints/query', ...(origin ? { origin } : {}) }),
       ]);
       const payload = {
         tool: 'ParamHunt',
-        version: '0.2.0',
+        version: '0.3.0',
         exportedAt: new Date().toISOString(),
         origin,
         parameters: siteFindings?.items ?? [],
         urls: urls.urls,
-        requests: requests.requests,
+        endpoints: endpoints.endpoints,
       };
       downloadFile(JSON.stringify(payload, null, 2), 'application/json', 'json');
       setExportMsg('JSON exported');
@@ -99,16 +98,14 @@ export default function Panel() {
         return <BuilderTab page={siteFindings} origin={origin} seed={builderSeed} />;
       case 'URLs':
         return <UrlsTab origin={origin} />;
-      case 'Requests':
-        return <RequestsTab origin={origin} tabId={tabId} />;
+      case 'Endpoints':
+        return <EndpointsTab origin={origin} />;
       case 'Cookies':
         return <CookiesTab origin={origin} tabId={tabId} />;
       case 'Storage':
         return <StorageTab tabId={tabId} />;
       case 'Findings':
         return <FindingsTab page={siteFindings} error={findingsError} onRefresh={refresh} />;
-      case 'Sources':
-        return <SourcesTab page={siteFindings} />;
       default:
         return <Empty label="unknown tab" />;
     }

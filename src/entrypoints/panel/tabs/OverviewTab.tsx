@@ -10,22 +10,19 @@ export default function OverviewTab({ origin }: { origin: string }) {
   const scope: ScopeView | null = useScope(tabId);
   const { page } = useSiteFindings(origin, { limit: 1000 });
   const [urlsTotal, setUrlsTotal] = useState<number | null>(null);
-  const [reqTotal, setReqTotal] = useState<number | null>(null);
+  const [endpointsTotal, setEndpointsTotal] = useState<number | null>(null);
   const [cookieCount, setCookieCount] = useState<number | null>(null);
-  const [engine, setEngine] = useState<{ running: boolean; modules: { id: string; status: string }[] } | null>(null);
 
   useEffect(() => {
     void (async () => {
       if (tabId == null) return;
       try {
-        const [urls, reqs, status] = await Promise.all([
+        const [urls, endpoints] = await Promise.all([
           sendRequest<{ total: number }>({ type: 'urls/query', ...(origin ? { origin } : {}) }),
-          sendRequest<{ total: number }>({ type: 'http/query', ...(origin ? { origin } : {}) }),
-          sendRequest<{ running: boolean; modules: { id: string; status: string }[] }>({ type: 'engine/status' }),
+          sendRequest<{ total: number }>({ type: 'endpoints/query', ...(origin ? { origin } : {}) }),
         ]);
         setUrlsTotal(urls.total);
-        setReqTotal(reqs.total);
-        setEngine(status);
+        setEndpointsTotal(endpoints.total);
       } catch {
         setUrlsTotal(null);
       }
@@ -66,7 +63,7 @@ export default function OverviewTab({ origin }: { origin: string }) {
       <div className="grid grid-cols-2 gap-2">
         <Stat label="Parameters (site)" value={page ? page.total : null} />
         <Stat label="URLs observed" value={urlsTotal} />
-        <Stat label="Requests (ring)" value={reqTotal} />
+        <Stat label="Endpoints discovered" value={endpointsTotal} />
         <Stat label="Cookies (metadata)" value={cookieCount} />
       </div>
 
@@ -85,18 +82,6 @@ export default function OverviewTab({ origin }: { origin: string }) {
         </div>
       )}
 
-      <div className="rounded bg-slate-800 p-2">
-        <div className="mb-1 text-[10px] uppercase text-slate-500">Engine</div>
-        <ul className="space-y-0.5">
-          {(engine?.modules ?? []).map((m) => (
-            <li key={m.id} className="flex items-center justify-between">
-              <span>{m.id}</span>
-              <Badge tone={m.status === 'started' ? 'ok' : 'bad'}>{m.status}</Badge>
-            </li>
-          ))}
-          {engine === null && <li className="text-slate-500">…</li>}
-        </ul>
-      </div>
     </div>
   );
 }

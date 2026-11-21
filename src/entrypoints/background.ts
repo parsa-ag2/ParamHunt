@@ -21,6 +21,7 @@ import { createResultsManager, type RequestHandlers } from '@modules/results-man
 import { createParamDiscovery } from '@modules/param-discovery';
 import { createHttpAnalyzer, createRequestScopeGate } from '@modules/http-analyzer';
 import { UrlsStore } from '@core/results/urls';
+import { EndpointsStore } from '@core/results/endpoints';
 import { isInScope } from '@shared/scope';
 import { loadSettingsCached, watchSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
@@ -43,12 +44,14 @@ export default defineBackground(() => {
 
   const results = createResultsManager(storage);
   const urlsStore = new UrlsStore(storage, STORAGE_KEYS.urls);
+  const endpointsStore = new EndpointsStore(storage, STORAGE_KEYS.endpoints);
   const gate = createRequestScopeGate();
-  const discovery = createParamDiscovery(results, { urlsStore, noteOrigin: gate.note });
-  const http = createHttpAnalyzer(storage, urlsStore, gate, {
+  const discovery = createParamDiscovery(results, { urlsStore, endpointsStore, noteOrigin: gate.note });
+  const http = createHttpAnalyzer(storage, urlsStore, endpointsStore, gate, {
     // NETWORK source: observed request query params flow into the same
     // dedup/store pipeline (batched flush, scope already checked per request)
-    onNetworkParams: (observations) => discovery.ingestObservations(observations, ''),
+    onNetworkParams: (observations: import('@shared/types/param').ParamObservation[]) =>
+      discovery.ingestObservations(observations, ''),
   });
 
   engine.register(results.module);
@@ -59,12 +62,6 @@ export default defineBackground(() => {
     ...results.handlers,
     ...discovery.handlers,
     ...http.handlers,
-    // The engine itself answers engine/status (root cause of the v0.1.0
-    // "no handler for engine/status" error: no module owned this message).
-    'engine/status': async () => ({
-      running: engine.isRunning(),
-      modules: engine.statusList(),
-    }),
   };
 
   chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {

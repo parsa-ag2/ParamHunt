@@ -33,7 +33,7 @@ export default function UrlsTab({ origin }: { origin: string }) {
   const rows = useMemo(() => {
     let list = urls ?? [];
     if (methodF !== 'all') list = list.filter((u) => u.method === methodF);
-    if (sourceF !== 'all') list = list.filter((u) => u.source === sourceF);
+    if (sourceF !== 'all') list = list.filter((u) => (u.sources ?? []).includes(sourceF as never));
     const needle = filter.trim().toLowerCase();
     if (!needle) return list;
     return list.filter((u) => u.url.toLowerCase().includes(needle) || u.paramNames.some((p) => p.toLowerCase().includes(needle)));
@@ -126,7 +126,7 @@ export default function UrlsTab({ origin }: { origin: string }) {
                     className="flex cursor-pointer items-center gap-2 px-3 py-1.5 hover:bg-slate-800/60"
                     onClick={() => setExpanded(open ? null : u.url)}
                   >
-                    <SourceBadge source={u.source} />
+                    <SourceBadge source={((u.sources ?? [])[0] ?? 'other') as 'page' | 'network'} />
                     <span className="truncate font-mono text-slate-300" title={u.url}>
                       <span className="text-slate-500">{u.origin}</span>
                       {display.slice(u.origin.length)}

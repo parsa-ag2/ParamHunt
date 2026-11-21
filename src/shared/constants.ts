@@ -13,6 +13,7 @@ export const STORAGE_KEYS = {
   settings: `${APP.storagePrefix}settings`,
   requests: `${APP.storagePrefix}requests`,
   urls: `${APP.storagePrefix}urls`,
+  endpoints: `${APP.storagePrefix}endpoints`,
 } as const;
 
 /** Dedup sample-value cap: values longer than this are truncated in findings. */
