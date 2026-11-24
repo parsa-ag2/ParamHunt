@@ -1,18 +1,7 @@
 /**
- * modules/export-engine — skeleton (architecture phase).
- * Full design contract (purpose, APIs, permissions, I/O, limits, tests):
- * docs/MODULE_DESIGN.md#export-engine. Implementation lands per roadmap.
+ * modules/export-engine — export serializers for collected findings.
+ *
+ * Real implementation (no stubs): CSV (RFC 4180-safe, formula-injection
+ * guarded) and the JSON payload shape used by the panel’s Export buttons.
  */
-import type { ModuleDefinition } from '@shared/types/module';
-export { findingsToCsv } from './lib/csv';
-
-export const exportEngineModule: ModuleDefinition = {
-  id: 'export-engine',
-  name: 'exportEngine',
-  description: 'TODO — see docs/MODULE_DESIGN.md#export-engine',
-  contexts: ['background'],
-  requiredApis: [],
-  start(_ctx) {
-    // TODO(roadmap): implement — no logic in architecture phase.
-  },
-};
+export { findingsToCsv } from './csv';

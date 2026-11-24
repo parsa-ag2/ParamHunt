@@ -1,5 +1,5 @@
 /**
- * modules/export-engine/lib/csv.ts — CSV serialization for findings.
+ * modules/export-engine/csv.ts — CSV serialization for findings.
  *
  * Escaping rules (tested):
  *  - cells with , " \n are quoted; inner quotes doubled (RFC 4180);

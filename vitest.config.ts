@@ -13,6 +13,7 @@ export default defineConfig({
       '@modules': resolve(__dirname, 'src/modules'),
       '@shared': resolve(__dirname, 'src/shared'),
       '@ui': resolve(__dirname, 'src/ui'),
+      '@test-utils': resolve(__dirname, 'src/test-utils'),
     },
   },
 });

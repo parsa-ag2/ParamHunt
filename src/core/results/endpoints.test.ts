@@ -1,6 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { EndpointsStore } from './endpoints';
-import { createMemoryAdapterSpy } from '../storage/spyAdapter';
+import { createMemoryAdapterSpy, type MemoryAdapterSpy } from '@test-utils/storage-adapters';
 import type { EndpointInput } from './endpoints';
 
 let spy: ReturnType<typeof createMemoryAdapterSpy>;

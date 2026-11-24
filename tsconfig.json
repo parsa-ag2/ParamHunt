@@ -12,7 +12,8 @@
       "@core/*": ["src/core/*"],
       "@modules/*": ["src/modules/*"],
       "@shared/*": ["src/shared/*"],
-      "@ui/*": ["src/ui/*"]
+      "@ui/*": ["src/ui/*"],
+      "@test-utils/*": ["src/test-utils/*"]
     }
   },
   "files": [".wxt/wxt.d.ts"],

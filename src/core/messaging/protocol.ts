@@ -5,7 +5,7 @@
  * message is a member of this discriminated union. Senders/receivers import
  * the union — never string literals — so the compiler enforces the contract.
  * Request/response messages carry `requestId`; `{type:'findings/changed'}`
- * is a broadcast event (no reply). See docs/COMPONENT_COMMUNICATION.md.
+ * is a broadcast event (no reply). See docs/ARCHITECTURE.md.
  */
 import type { Finding, FindingPage, FindingQuery } from '@shared/types/finding';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';

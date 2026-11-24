@@ -4,7 +4,7 @@
  * Every analysis capability (HTTP, params, DOM, postMessage, JS, events,
  * storage) is a Module: a self-contained unit registered with the Engine.
  * Modules never talk to each other directly — only through the EventBus
- * and the typed message protocol. See docs/SYSTEM_ARCHITECTURE.md.
+ * and the typed message protocol. See docs/ARCHITECTURE.md.
  */
 
 /** Stable identifiers for the built-in modules. */

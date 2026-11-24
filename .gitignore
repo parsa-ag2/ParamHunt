@@ -18,6 +18,22 @@ web-ext.config.ts
 .env.*
 *.pem
 *.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.sqlite
+*.db
+*.dump
+*.log
+*.bak
+*.har
+*.session
+credentials*.json
+secrets*.json
+screenshots/
+evidence/
+browser-profile/
 
 # test artifacts
 coverage

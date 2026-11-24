@@ -1,7 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';import { sendRequest } from '@core/messaging/bridge';
 import { useDevtoolsTabId, useScope, useSiteFindings } from './hooks';
 import { Empty, Toast } from './ui';
-import { findingsToCsv } from '@modules/export-engine/lib/csv';
+import { findingsToCsv } from '@modules/export-engine/csv';
 import OverviewTab from './tabs/OverviewTab';
 import ParametersTab from './tabs/ParametersTab';
 import BuilderTab from './tabs/BuilderTab';

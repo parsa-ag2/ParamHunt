@@ -4,7 +4,7 @@
  * IMPORTANT ARCHITECTURE FACT: this bus works ONLY inside a single JS
  * context (a service worker OR one content script world). Cross-context
  * flow goes through the messaging bridge (core/messaging) — the bus never
- * crosses context boundaries. See docs/COMPONENT_COMMUNICATION.md.
+ * crosses context boundaries. See docs/ARCHITECTURE.md.
  */
 import type { EngineEvents } from '@shared/types/module';
 

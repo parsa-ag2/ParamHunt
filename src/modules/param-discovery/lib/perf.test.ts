@@ -12,10 +12,11 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { extractDomParams, extractFromNode, extractJsParams } from './extract';
+import { extractEndpoints } from './endpoints';
 import { FindingsStore } from '@core/results/store';
-import { createMemoryAdapterSpy } from '@core/storage/spyAdapter';
-import { createMemoryAdapter } from '@core/storage/memoryAdapter';
-import { BundleMineCache } from './mine-cache';
+import { createMemoryAdapterSpy, type MemoryAdapterSpy } from '@test-utils/storage-adapters';
+import { createMemoryAdapter } from '@test-utils/storage-adapters';
+import { BundleMineCache } from './bundle-cache';
 import type { FindingDraft } from '@shared/types/module';
 
 function buildBigDom(nodeCount: number): HTMLElement {
@@ -138,11 +139,11 @@ describe('bundle-mine cache (measured)', () => {
   it('same bundle URL is fetched exactly once', async () => {
     const fetchSpy = vi.fn(async (_u: string) => 'const p = new URLSearchParams(location.search); const x = p.get("page");');
     const cache = new BundleMineCache();
-    const first = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, fetchSpy as never);
-    const second = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, fetchSpy as never);
+    const first = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, extractEndpoints, fetchSpy as never);
+    const second = await cache.mine(['https://t.com/app.js'], 'https://t.com/', extractJsParams, extractEndpoints, fetchSpy as never);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(second.length).toBe(first.length);
-    expect(first.some((o) => o.name === 'page')).toBe(true);
+    expect(second.params.length).toBe(first.params.length);
+    expect(first.params.some((o: { name: string }) => o.name === 'page')).toBe(true);
     expect(cache.size).toBe(1);
   });
 
@@ -150,7 +151,7 @@ describe('bundle-mine cache (measured)', () => {
     const fetchSpy = vi.fn(async (u: string) => `const p = new URLSearchParams(u); p.get("${u}");`);
     const cache = new BundleMineCache(2);
     for (const u of ['a', 'b', 'c']) {
-      await cache.mine([`https://t/${u}.js`], 'https://t/', extractJsParams, fetchSpy as never);
+      await cache.mine([`https://t/${u}.js`], 'https://t/', extractJsParams, extractEndpoints, fetchSpy as never);
     }
     expect(cache.size).toBe(2); // 'a' evicted
   });
@@ -169,7 +170,7 @@ describe('first-party filter reaches the analysis stage (no fetch for excluded)'
     const cache = new BundleMineCache();
     // apply the classification exactly like the background pipeline does
     const eligible = srcs.filter((s) => classifyScript(s, 'https://market.example.com') === 'first-party');
-    await cache.mine(eligible, 'https://market.example.com/', extractJsParams, fetchSpy as never);
+    await cache.mine(eligible, 'https://market.example.com/', extractJsParams, extractEndpoints, fetchSpy as never);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const firstCall = fetchSpy.mock.calls[0]?.[0] as string | undefined;
     expect(firstCall).toBe('https://market.example.com/assets/app.js');

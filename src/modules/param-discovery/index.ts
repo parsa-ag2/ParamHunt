@@ -25,6 +25,7 @@ import {
   extractJsParams,
 } from './lib/extract';
 import { extractEndpoints } from './lib/endpoints';
+import { BundleMineCache } from './lib/bundle-cache';
 import type { EndpointCandidate } from './lib/endpoints';
 import type { RequestHandlers } from '../results-manager';
 import type { ResultsManager } from '../results-manager';
@@ -137,10 +138,6 @@ export function createParamDiscovery(
         params.push(...minedParams);
         endpoints = endpoints.concat(minedEndpoints);
         bundleCache.set(src, { params: minedParams, endpoints: minedEndpoints });
-        if (bundleCache.size > BUNDLE_CACHE_MAX) {
-          const oldest = bundleCache.keys().next().value;
-          if (oldest) bundleCache.delete(oldest); // LRU eviction
-        }
       } catch {
         // unreachable bundle (CORS-less, offline) — skip, never fabricate
       }

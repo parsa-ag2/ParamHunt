@@ -1,3 +1,10 @@
+# MODULES.md
+
+> Consolidated from MODULE_DESIGN (v0.5 cleanup).
+> Status note: Overview, Parameters (+quality split), URLs, Endpoints, Builder,
+> Cookies, Storage, Findings and Export are implemented; modules marked as
+> planned elsewhere in this file are NOT implemented yet.
+
 # MODULE_DESIGN.md
 
 Every module implements `ModuleDefinition` (`src/shared/types/module.ts`): metadata, contexts, required APIs, lifecycle, and everything else arrives via injected `ModuleContext` services. Below: the contract per module (purpose / responsibilities / APIs / permissions / I/O / deps / interfaces / limitations / tests).

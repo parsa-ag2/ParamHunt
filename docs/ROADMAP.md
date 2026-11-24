@@ -1,3 +1,7 @@
+# ROADMAP.md
+
+> Consolidated from DEVELOPMENT_ROADMAP (v0.5 cleanup). Only mark what is real.
+
 # DEVELOPMENT_ROADMAP.md
 
 Build order designed so the **foundation never needs restructuring**: engine + contracts first, then one module end-to-end to prove the pipeline, then parallelize.

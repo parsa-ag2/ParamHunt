@@ -1,3 +1,7 @@
+# SECURITY.md
+
+> Consolidated from SECURITY_MODEL (v0.5 cleanup).
+
 # SECURITY_MODEL.md
 
 ParamHunt is a security *instrument*; its own security posture must be exemplary — a compromised observer is the worst possible outcome.

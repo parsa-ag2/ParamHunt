@@ -44,7 +44,7 @@ ADR-style records. Status: **Accepted / Proposed / Superseded**. Each records th
 ## #9 — MAIN-world access via registered content script (`world: "MAIN"`) — **Accepted**
 
 - For postmessage-tracker/event hooks. Rejected: `eval`/`Function` injection (CSP/standards violation), remote script injection (MV3 forbidden), tabs.executeScript legacy path (deprecated UX).
-- Channel MAIN↔isolated: `window.postMessage` + per-session token + exact-origin check (docs/COMPONENT_COMMUNICATION §3.3).
+- Channel MAIN↔isolated: `window.postMessage` + per-session token + exact-origin check (docs/ARCHITECTURE.md §3.3).
 
 ## #10 — Message protocol as single discriminated union — **Accepted**
 

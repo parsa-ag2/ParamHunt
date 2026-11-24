@@ -6,7 +6,7 @@
  * "parameters don't appear".
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createMemoryAdapter } from '@core/storage/memoryAdapter';
+import { createMemoryAdapter } from '@test-utils/storage-adapters';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import { invalidateSettingsCache } from '@shared/settings';
 import type { UrlCandidate } from '@shared/types/http';

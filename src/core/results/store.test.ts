@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { FindingsStore } from './store';
-import { createMemoryAdapter } from '../storage/memoryAdapter';
+import { createMemoryAdapter } from '@test-utils/storage-adapters';
 import type { FindingDraft } from '@shared/types/module';
 
 function draft(overrides: Partial<FindingDraft> = {}): FindingDraft {
