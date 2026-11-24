@@ -5,6 +5,16 @@
  * headers. Evidence is compact (snippets ≤160 chars), never whole files.
  */
 
+export interface UrlCandidate {
+  /** Absolute URL (resolved against the page when the base is known). */
+  url: string;
+  source: UrlSource;
+  /** Where on the page it was found (content location evidence). */
+  evidence?: { url?: string; snippet?: string };
+  /** Only when the discovery context pins it (form method). */
+  method?: 'GET' | 'POST';
+}
+
 export type UrlSource =
   | 'page' // the page's own URL
   | 'link' // <a href>

@@ -18,7 +18,7 @@ import type { ModuleDefinition } from '@shared/types/module';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import type { UrlsStore } from '@core/results/urls';
 import type { RequestHandlers } from '../results-manager';
-import { isInScope } from '@shared/scope';
+import { isRequestInScope } from '@shared/scope';
 import { loadSettingsCached, watchSettings } from '@shared/settings';
 import { pipelineError } from '@shared/debug';
 
@@ -45,11 +45,12 @@ export function createRequestScopeGate(): RequestScopeGate {
   return {
     async check(url: string) {
       const settings = await loadSettingsCached(); // cached — no storage read per request
-      // requests have no "current origin" — allowlist/exclusions decide,
-      // plus origins the user is actively researching this session
-      const decision = isInScope(url, {
-        currentOrigin: '',
-        allowlist: [...settings.allowlist, ...activeOrigins],
+      // ORIGIN-AWARE gate: the parsed request origin is compared against the
+      // actively inspected origins (scheme+host+port exact). A bare-origin
+      // allowlist pattern matches any URL on that origin. Exclusions win.
+      const decision = isRequestInScope(url, {
+        activeOrigins: [...activeOrigins],
+        allowlist: settings.allowlist,
         exclusions: settings.exclusions,
       });
       return decision.inScope;
@@ -74,8 +75,8 @@ export function createHttpAnalyzer(
   /** Origins currently permitted for observation (fed by discovery activity). */
   noteOrigin: (origin: string) => void;
 } {
-  /** Request-URL dedup: identical URLs (xhr polling!) are processed once. */
-  const seenUrls = new Set<string>();
+  /** Request dedup: METHOD+URL — one method must never suppress another. */
+  const seenRequests = new Set<string>();
 
   async function recordRequest(details: WebRequestDetails): Promise<void> {
     const settings = await loadSettingsCached();
@@ -87,13 +88,14 @@ export function createHttpAnalyzer(
       return;
     }
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
-    if (seenUrls.has(details.url)) return; // dedup: same URL (polling xhr) once
+    const dedupKey = `${details.method.toUpperCase()}|${details.url}`; // METHOD+URL: one method never suppresses another
+    if (seenRequests.has(dedupKey)) return;
     if (!(await gate.check(details.url))) return;
-    seenUrls.add(details.url);
-    if (seenUrls.size > 2_000) {
-      // FIFO eviction of the dedup set (oldest URL becomes eligible again)
-      const first = seenUrls.values().next().value;
-      if (first) seenUrls.delete(first);
+    seenRequests.add(dedupKey);
+    if (seenRequests.size > 2_000) {
+      // FIFO eviction of the dedup set (oldest becomes eligible again)
+      const first = seenRequests.values().next().value;
+      if (first) seenRequests.delete(first);
     }
     const method = normalizeMethod(details.method);
     await urlsStore.addMany([{ url: details.url, method, source: 'network' }]);
@@ -178,6 +180,14 @@ export function createHttpAnalyzer(
   };
 
   const handlers: RequestHandlers = {
+    'endpoints/query': async (msg) => {
+      const items = await endpointsStore.list(msg.origin);
+      return { endpoints: items, total: items.length };
+    },
+    'endpoints/clear': async () => {
+      const cleared = await endpointsStore.clear();
+      return { cleared };
+    },
     'urls/query': async (msg) => {
       const urls = await urlsStore.list(msg.origin);
       return { urls, total: urls.length };
@@ -186,13 +196,7 @@ export function createHttpAnalyzer(
     'cookies/query': async (msg) => {
       const tab = await chrome.tabs.get(msg.tabId);
       if (!tab.url) return { cookies: [] };
-      const settings = await loadSettingsCached();
-      const decision = isInScope(tab.url, {
-        currentOrigin: new URL(tab.url).origin,
-        allowlist: settings.allowlist,
-        exclusions: settings.exclusions,
-      });
-      if (!decision.inScope) return { cookies: [] };
+      // cookie metadata is origin-scoped: the tab's own origin is implicit
       const jar = await chrome.cookies.getAll({ url: tab.url });
       // Metadata only — the value is deliberately not included.
       return {

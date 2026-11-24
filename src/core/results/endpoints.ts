@@ -34,27 +34,38 @@ export class EndpointsStore {
     return `${e.url ?? ''}|${e.line ?? ''}|${e.column ?? ''}|${e.snippet ?? ''}`;
   }
 
-  async addMany(inputs: readonly EndpointInput[]): Promise<number> {
+  async addMany(inputs: readonly EndpointInput[]): Promise<{ added: number; updated: number }> {
     const items = await this.load();
     let added = 0;
+    let updated = 0;
     for (const input of inputs) {
       const method = input.method || 'UNKNOWN';
-      const key = `${method}|${input.path}`;
+      // identity includes ORIGIN — /api/users on two different API hosts
+      // are different endpoints; unresolved-origin candidates keep their
+      // own identity space (origin '') and never corrupt known-origin ones
+      const key = `${method}|${safeOrigin(input.url) || ''}|${input.path}`;
       const existing = items.find((r) => r.key === key);
       if (existing) {
         existing.occurrences += 1;
         existing.lastSeenAt = new Date().toISOString();
-        if (!existing.sources.includes(input.source)) existing.sources.push(input.source);
+        if (!existing.sources.includes(input.source)) {
+          existing.sources.push(input.source);
+          updated += 1;
+        }
         if (input.evidence) {
           const ek = this.evKey(input.evidence);
           if (!existing.evidence.some((e) => this.evKey(e) === ek) && existing.evidence.length < 10) {
             existing.evidence.push(input.evidence);
+            updated += 1;
           }
         }
-        if (!existing.sourceFiles.includes(input.evidence?.url ?? '')) {
-          const sf = input.evidence?.url;
-          if (sf) existing.sourceFiles.push(sf);
+        // never overwrite a useful absolute URL with an empty one
+        if (!existing.url && input.url) existing.url = input.url;
+        if (!existing.origin && input.url) existing.origin = safeOrigin(input.url);
+        for (const pn of input.paramNames ?? []) {
+          if (!existing.paramNames.includes(pn)) existing.paramNames.push(pn);
         }
+        updated += 1; // real metadata change → schedule persistence (v0.5 bug class)
         continue;
       }
       const nowIso = new Date().toISOString();
@@ -76,7 +87,7 @@ export class EndpointsStore {
       });
       added += 1;
     }
-    if (added > 0) {
+    if (added + updated > 0) {
       if (items.length > this.maxEndpoints) {
         items.sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));
         items.splice(0, items.length - this.maxEndpoints);
@@ -84,7 +95,7 @@ export class EndpointsStore {
       this.cache = items;
       this.scheduleFlush(added >= 25 ? 0 : this.flushDelayMs);
     }
-    return added;
+    return { added, updated };
   }
 
   async list(originFilter?: string): Promise<EndpointRecord[]> {
@@ -100,6 +111,13 @@ export class EndpointsStore {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     await this.persist([]);
     return items.length;
+  }
+
+  /** Force-write the in-memory catalog (tests + shutdown paths). */
+  async flush(): Promise<void> {
+    if (this.flushTimer) clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    if (this.cache) await this.persist(this.cache);
   }
 
   /** @internal test hook */

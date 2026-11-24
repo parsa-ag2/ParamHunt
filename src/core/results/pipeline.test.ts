@@ -9,8 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createMemoryAdapter } from '@core/storage/memoryAdapter';
 import type { StorageAdapter } from '@core/storage/StorageAdapter';
 import { invalidateSettingsCache } from '@shared/settings';
+import type { UrlCandidate } from '@shared/types/http';
 import { createResultsManager } from '@modules/results-manager';
 import { createParamDiscovery } from '@modules/param-discovery';
+import { createHttpAnalyzer, createRequestScopeGate } from '@modules/http-analyzer';
 import { UrlsStore } from '@core/results/urls';
 import { EndpointsStore } from '@core/results/endpoints';
 import type { FindingPage } from '@shared/types/finding';
@@ -27,7 +29,7 @@ interface MockChrome {
 
 let storageBag: StorageBag;
 let mock: MockChrome;
-let handlers: ReturnType<typeof createParamDiscovery>['handlers'];
+let handlers: ReturnType<typeof createParamDiscovery>['handlers'] & ReturnType<typeof createHttpAnalyzer>['handlers'];
 let resultsHandlers: ReturnType<typeof createResultsManager>['handlers'];
 
 const TAB_ID = 42;
@@ -53,8 +55,14 @@ beforeEach(() => {
 
   const storage: StorageAdapter = createMemoryAdapter();
   const results = createResultsManager(storage);
-  const discovery = createParamDiscovery(results, { urlsStore: new UrlsStore(storage, 'paramhunt:urls'), endpointsStore: new EndpointsStore(storage, 'paramhunt:endpoints'), noteOrigin: () => {} });
-  handlers = discovery.handlers;
+  const urlsStore = new UrlsStore(storage, 'paramhunt:urls');
+  const endpointsStore = new EndpointsStore(storage, 'paramhunt:endpoints');
+  const discovery = createParamDiscovery(results, { urlsStore, endpointsStore, noteOrigin: () => {} });
+  const http = createHttpAnalyzer(storage, urlsStore, endpointsStore, {
+    check: async () => true, // scope gate is exercised in scope.test.ts
+    note: () => {},
+  });
+  handlers = { ...discovery.handlers, ...http.handlers };
   resultsHandlers = results.handlers;
 });
 
@@ -169,5 +177,80 @@ describe('collection → display pipeline', () => {
       sender,
     );
     expect(view).toMatchObject({ origin: 'https://target.example.com', inScope: true });
+  });
+});
+
+describe('URL catalog pipeline (structured candidates → store → query)', () => {
+  it('structured URL candidates preserve source attribution end-to-end', async () => {
+    const urlCandidates: UrlCandidate[] = [
+      { url: 'https://target.example.com/products?category=10', source: 'link', evidence: { url: 'https://target.example.com/app', snippet: 'a /products' } },
+      { url: 'https://target.example.com/checkout', source: 'form', method: 'POST', evidence: { url: 'https://target.example.com/app', snippet: 'form /checkout' } },
+      { url: 'https://target.example.com/checkout', source: 'page', evidence: { url: 'https://target.example.com/checkout' } },
+    ];
+    await must('params/report')(
+      { type: 'params/report', requestId: 'u1', observations: [], scriptSrcs: [], urls: urlCandidates, endpoints: [] },
+      sender,
+    );
+    const page = (await must('urls/query')(
+      { type: 'urls/query', requestId: 'u2', origin: 'https://target.example.com' },
+      sender,
+    )) as { urls: Array<{ url: string; sources: string[] }>; total: number };
+    // 2 candidates + the scanned page URL itself (registered as page source)
+    expect(page.total).toBe(3);
+    expect(page.urls.some((u) => u.url === TAB_URL && u.sources.includes('page'))).toBe(true);
+    const checkout = page.urls.find((u) => u.url.endsWith('/checkout'));
+    expect(checkout?.sources).toContain('form');
+    expect(checkout?.sources).toContain('page'); // multi-source preserved
+  });
+
+  it('the scanned page URL itself is registered as a page-source record', async () => {
+    await must('params/report')(
+      { type: 'params/report', requestId: 'u3', observations: [], scriptSrcs: [], urls: [], endpoints: [] },
+      sender,
+    );
+    const page = (await must('urls/query')(
+      { type: 'urls/query', requestId: 'u4', origin: 'https://target.example.com' },
+      sender,
+    )) as { urls: Array<{ url: string }>; total: number };
+    expect(page.urls.some((u) => u.url === TAB_URL)).toBe(true);
+  });
+});
+
+describe('endpoint handlers (endpoints/query + clear)', () => {
+  it('endpoints/query returns records; endpoints/clear empties the catalog', async () => {
+    await must('endpoints/query')(
+      { type: 'endpoints/query', requestId: 'e1', origin: 'https://target.example.com' },
+      sender,
+    );
+    // seed via a reported endpoint candidate from an inline script
+    await must('params/report')(
+      {
+        type: 'params/report',
+        requestId: 'e2',
+        observations: [],
+        scriptSrcs: [],
+        urls: [],
+        endpoints: [
+          {
+            url: 'https://target.example.com/api/users',
+            path: '/api/users',
+            method: 'GET',
+            methodConfidence: 'inferred',
+            source: 'inline-js',
+            category: 'USER',
+            evidence: { url: 'https://target.example.com/app', line: 12, column: 3, snippet: 'fetch("/api/users")' },
+          },
+        ],
+      },
+      sender,
+    );
+    const page = (await must('endpoints/query')(
+      { type: 'endpoints/query', requestId: 'e3', origin: 'https://target.example.com' },
+      sender,
+    )) as { endpoints: Array<{ path: string; method: string; category: string }>; total: number };
+    expect(page.total).toBe(1);
+    expect(page.endpoints[0]).toMatchObject({ path: '/api/users', method: 'GET', category: 'USER' });
+    const cleared = await must('endpoints/clear')({ type: 'endpoints/clear', requestId: 'e4' }, sender);
+    expect(cleared.cleared).toBeGreaterThanOrEqual(1);
   });
 });

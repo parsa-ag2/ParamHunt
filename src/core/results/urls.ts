@@ -29,7 +29,7 @@ export class UrlsStore {
    * request-heavy page cannot thrash chrome.storage (flushes ≤1 per 2.5s,
    * plus an immediate flush when the batch grows large).
    */
-  async addMany(inputs: readonly UrlInput[]): Promise<number> {
+  async addMany(inputs: readonly UrlInput[]): Promise<{ added: number; updated: number }> {
     const items = await this.load();
     let added = 0;
     let updated = 0;
@@ -43,8 +43,8 @@ export class UrlsStore {
         existing.lastSeenAt = new Date().toISOString();
         if (!existing.sources.includes(input.source)) {
           existing.sources.push(input.source); // preserve ALL discovery sources
+          updated += 1; // a real metadata change, not just a repeat sighting
         }
-        updated += 1;
         continue;
       }
       const nowIso = new Date().toISOString();
@@ -61,7 +61,10 @@ export class UrlsStore {
       });
       added += 1;
     }
-    if (added > 0) {
+    // persist on NEW records AND on meaningful metadata updates (occurrence
+    // bumps / source merges) — the v0.5 bug skipped persistence when only
+    // existing records were touched
+    if (added + updated > 0) {
       if (items.length > this.maxUrls) {
         items.sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));
         items.splice(0, items.length - this.maxUrls);
@@ -69,7 +72,7 @@ export class UrlsStore {
       this.cache = items;
       this.scheduleFlush(added >= 25 ? 0 : this.flushDelayMs);
     }
-    return added;
+    return { added, updated };
   }
 
   async list(originFilter?: string): Promise<UrlRecord[]> {

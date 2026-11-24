@@ -23,6 +23,7 @@ import { isInScope } from '@shared/scope';
 import { loadSettingsCached, watchSettings, type ScopeSettings } from '@shared/settings';
 import { createPipelineLogger, pipelineError, refreshDebugFlag } from '@shared/debug';
 import {
+  catalogUrlsFromRoot,
   collectCatalogUrls,
   collectInlineScripts,
   collectScriptSrcs,
@@ -32,7 +33,7 @@ import {
   extractUrlParams,
 } from '@modules/param-discovery/lib/extract';
 import { extractEndpoints } from '@modules/param-discovery/lib/endpoints';
-import type { EndpointCandidateLike } from '@shared/types/http';
+import type { EndpointCandidateLike, UrlCandidate } from '@shared/types/http';
 import type { ParamObservation } from '@shared/types/param';
 
 const RESCAN_DEBOUNCE_MS = 1200;
@@ -43,6 +44,7 @@ const MAX_PENDING_NODES = 1_000;
 /** Content-side dedup: 'name|kind|path' keys, FIFO-evicted. */
 const MAX_SEEN_PARAMS = 5_000;
 const MAX_SEEN_SCRIPTS = 300;
+const MAX_SEEN_CATALOG = 2_000;
 
 export default defineContentScript({
   matches: ['<all_urls>'],
@@ -66,6 +68,7 @@ export default defineContentScript({
     /** 'name|kind|path' dedup — FIFO-capped to bound memory. */
     const seenParams = new Map<string, true>();
     const seenScripts = new Set<string>();
+    const seenCatalogUrls = new Set<string>(); // FIFO-capped below
     const processedElements = new WeakSet<Element>();
     let pendingNodes: Element[] = [];
     let pendingTimer: ReturnType<typeof setTimeout> | undefined;
@@ -99,7 +102,7 @@ export default defineContentScript({
       ok: boolean;
       observations: ParamObservation[];
       scriptSrcs: string[];
-      urls: string[];
+      urls: UrlCandidate[];
       endpoints: EndpointCandidateLike[];
     }> {
       const pageUrl = location.href;
@@ -174,7 +177,17 @@ export default defineContentScript({
         return scope.inScope;
       });
       log('collect', `full scan: ${observations.length} observations, ${catalogUrls.length} catalog URLs, ${inlineEndpoints.length} endpoint candidates`, { pageUrl, scriptSrcs: scriptSrcs.length });
-      return { ok: true, observations, scriptSrcs, urls: catalogUrls.map((c) => c.url), endpoints: inlineEndpoints.slice(0, 50) };
+      const urlCandidates: UrlCandidate[] = [];
+      for (const c of catalogUrls) {
+        if (seenCatalogUrls.has(c.url)) continue;
+        if (seenCatalogUrls.size >= MAX_SEEN_CATALOG) {
+          const oldest = seenCatalogUrls.values().next().value;
+          if (oldest) seenCatalogUrls.delete(oldest);
+        }
+        seenCatalogUrls.add(c.url);
+        urlCandidates.push({ url: c.url, source: c.source, evidence: c.evidence });
+      }
+      return { ok: true, observations, scriptSrcs, urls: urlCandidates, endpoints: inlineEndpoints.slice(0, 50) };
     }
 
     /** Incremental scan — ONLY the pending added subtrees. */
@@ -214,13 +227,14 @@ export default defineContentScript({
       scriptSrcs: string[],
       pageUrl: string,
       endpoints: EndpointCandidateLike[] = [],
+      urlCandidates: UrlCandidate[] = [],
     ): Promise<void> {
       try {
         const summary = await sendRequest<{ stored: number; duplicates: number }>({
           type: 'params/report',
           observations,
           scriptSrcs,
-          urls: pageUrl === location.href ? [location.href] : [],
+          urls: urlCandidates,
           endpoints,
         });
         log('report', `stored ${summary.stored} new, ${summary.duplicates} known`, { pageUrl });
@@ -239,7 +253,7 @@ export default defineContentScript({
         const result = await fullScan();
         lastScanAt = Date.now();
         if (!result.ok) return;
-        await report(result.observations, result.scriptSrcs, location.href, result.endpoints);
+        await report(result.observations, result.scriptSrcs, location.href, result.endpoints, result.urls);
       } catch (err) {
         pipelineError('content', 'error', `scan/report failed: ${err instanceof Error ? err.message : String(err)}`);
       } finally {
@@ -279,8 +293,27 @@ export default defineContentScript({
     }
 
     /** Manual/SPA rescan entry — runs an INCREMENTAL pass over the live DOM
-     *  (unprocessed elements only), falling back to nothing heavy. */
-    async function rescan(): Promise<{ observations: ParamObservation[]; scriptSrcs: string[] }> {
+     *  (unprocessed elements only) and returns structured URL candidates +
+     *  endpoint candidates for the background pipeline. */
+    async function rescan(): Promise<{
+      observations: ParamObservation[];
+      scriptSrcs: string[];
+      urlCandidates: UrlCandidate[];
+      endpoints: EndpointCandidateLike[];
+    }> {
+      if (!settings) settings = await loadSettingsCached();
+      const pageUrl = location.href;
+      const eligible = (u: string) =>
+        isInScope(u, {
+          currentOrigin: location.origin,
+          allowlist: settings?.allowlist ?? [],
+          exclusions: settings?.exclusions ?? [],
+        }).inScope;
+
+      // the CURRENT page URL is always a candidate (SPA navigation → new URL)
+      const urlCandidates: UrlCandidate[] = [{ url: pageUrl, source: 'page', evidence: { url: pageUrl } }];
+      seenCatalogUrls.add(pageUrl);
+
       // process any not-yet-processed elements in the current document
       const unprocessed: Element[] = [];
       for (const el of document.querySelectorAll('a[href], form[action], form, input, select, textarea, script')) {
@@ -289,22 +322,23 @@ export default defineContentScript({
       const observations: ParamObservation[] = [];
       let endpoints: EndpointCandidateLike[] = [];
       for (const node of unprocessed) {
-        for (const o of extractFromNode(node, location.href, document, processedElements)) {
+        for (const o of extractFromNode(node, pageUrl, document, processedElements)) {
           if (remember(o)) observations.push(o);
+        }
+        // URL candidates from the new subtree (bounded, same eligibility)
+        for (const entry of catalogUrlsFromRoot(node, pageUrl, eligible)) {
+          if (seenCatalogUrls.has(entry.url)) continue;
+          seenCatalogUrls.add(entry.url);
+          urlCandidates.push({ url: entry.url, source: entry.source, evidence: entry.evidence });
         }
         if (node.tagName === 'SCRIPT') {
           const code = (node as HTMLScriptElement).textContent ?? '';
           if (code.trim() && code.length <= MAX_INLINE_SCRIPT_CHARS) {
-            endpoints = endpoints.concat(extractEndpoints(code, { pageUrl: location.href, source: 'inline-js' }));
+            endpoints = endpoints.concat(extractEndpoints(code, { pageUrl, source: 'inline-js' }));
           }
         }
       }
-      const scriptSrcs = collectScriptSrcs(document, location.href).filter((s) => {
-        if (seenScripts.has(s)) return false;
-        seenScripts.add(s);
-        return true;
-      });
-      return { observations, scriptSrcs };
+      return { observations, scriptSrcs: [], urlCandidates, endpoints };
     }
 
     // background-relayed manual rescan (panel button + SPA navigation)
@@ -323,12 +357,13 @@ export default defineContentScript({
               data: {
                 observations: result.observations,
                 scriptSrcs: result.scriptSrcs,
-                urls: [],
+                urls: result.urlCandidates,
+                endpoints: result.endpoints,
                 scope: { inScope: await scopeAllows(location.href), reason: 'current-origin' },
               },
             });
-            if (result.observations.length > 0 || result.scriptSrcs.length > 0) {
-              await report(result.observations, result.scriptSrcs, location.href);
+            if (result.observations.length > 0 || result.scriptSrcs.length > 0 || result.urlCandidates.length > 0) {
+              await report(result.observations, result.scriptSrcs, location.href, result.endpoints, result.urlCandidates);
             }
           } catch (err) {
             pipelineError('content', 'error', `scan/run failed: ${err instanceof Error ? err.message : String(err)}`);

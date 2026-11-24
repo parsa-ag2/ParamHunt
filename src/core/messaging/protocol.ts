@@ -9,7 +9,7 @@
  */
 import type { Finding, FindingPage, FindingQuery } from '@shared/types/finding';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
-import type { CookieMeta, EndpointRecord, StorageKeyMeta, UrlRecord } from '@shared/types/http';
+import type { CookieMeta, EndpointRecord, StorageKeyMeta, UrlCandidate, UrlRecord } from '@shared/types/http';
 
 /** Scope view sent to UIs. */
 export interface ScopeView {
@@ -36,8 +36,8 @@ export type ParamHuntMessage =
       observations: readonly ParamObservation[];
       /** <script src> URLs for the background to fetch + mine (host perms). */
       scriptSrcs: readonly string[];
-      /** URLs seen on the page (links, form actions) for the URL catalog. */
-      urls: readonly string[];
+      /** Structured URL candidates seen on the page (URL catalog input). */
+      urls: readonly UrlCandidate[];
       /** Endpoint candidates mined from INLINE scripts (content-side pass). */
       endpoints: readonly import('@shared/types/http').EndpointCandidateLike[];
     }
@@ -63,8 +63,8 @@ export type ParamHuntMessage =
   /** internal: background -> content, collects key metadata only */
   | { type: 'storage/keys'; requestId: string };
 
-/** Broadcast event: pushed by the background after findings change. */
-export type ParamHuntEvent = { type: 'findings/changed' };
+/** Broadcast events — coalesced, pushed by the background after writes. */
+export type ParamHuntEvent = { type: 'findings/changed' } | { type: 'catalog/changed' };
 
 /** Any message that can arrive on chrome.runtime.onMessage. */
 export type AnyParamHuntMessage = ParamHuntMessage | ParamHuntEvent;

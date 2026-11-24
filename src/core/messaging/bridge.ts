@@ -8,6 +8,7 @@
  *  - payloads are JSON-serializable only.
  */
 import type {
+  ParamHuntEvent,
   ParamHuntMessage,
   ParamHuntResponse,
 } from './protocol';
@@ -73,7 +74,7 @@ export async function sendRequest<T>(
 }
 
 /** Fire-and-forget broadcast from the background (listener-less sends are fine). */
-export function broadcastEvent(event: { type: 'findings/changed' }): void {
+export function broadcastEvent(event: ParamHuntEvent): void {
   void chrome.runtime.sendMessage(event).catch(() => {
     // no receivers (e.g. all UIs closed) — not an error
   });

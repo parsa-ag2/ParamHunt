@@ -548,7 +548,11 @@ const URL_ATTR_SELECTOR =
 const SCHEME_OK = /^https?:\/\//i;
 
 /** Collect catalog URLs from the live document (same-origin + first-party domains). */
-export function collectCatalogUrls(doc: Document, pageUrl: string, isEligibleDomain: (u: string) => boolean): UrlCatalogEntry[] {
+export function collectCatalogUrls(
+  doc: Document,
+  pageUrl: string,
+  isEligibleDomain: (u: string) => boolean,
+): UrlCatalogEntry[] {
   const out = new Map<string, UrlCatalogEntry>();
   const base = docBase(doc, pageUrl);
   const add = (raw: string | null, source: UrlCatalogEntry['source'], evidenceSnippet?: string): void => {
@@ -565,7 +569,61 @@ export function collectCatalogUrls(doc: Document, pageUrl: string, isEligibleDom
   };
 
   add(pageUrl, 'page');
-  for (const el of doc.querySelectorAll(URL_ATTR_SELECTOR)) {
+  scanCatalogUrls(doc, base, pageUrl, add);
+
+  // canonical + meta refresh (explicit evidence, document-level only)
+  for (const m of doc.querySelectorAll('link[rel="canonical"], meta[http-equiv="refresh" i]')) {
+    const rel = m.getAttribute('rel') ?? '';
+    const content = m.getAttribute('content') ?? '';
+    const raw = rel === 'canonical' ? m.getAttribute('href') : content.match(/url=([^;]+)/i)?.[1]?.trim();
+    if (raw) add(raw, 'meta', rel === 'canonical' ? `canonical ${raw.slice(0, 100)}` : `meta refresh ${content.slice(0, 100)}`);
+  }
+
+  // JS string literals: absolute URLs + fetch/XHR paths (bounded)
+  for (const code of collectInlineScripts(doc)) {
+    const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
+    for (const u of jsStringUrls(bounded, pageUrl)) add(u, 'inline-js', 'inline script');
+  }
+
+  return [...out.values()];
+}
+
+/**
+ * INCREMENTAL URL collection: catalog URLs from ONE node (or its subtree).
+ * Used by the MutationObserver path — never a full-document rescan.
+ * Element-level sources only (page/canonical/meta are document-level).
+ */
+export function catalogUrlsFromRoot(
+  root: Element,
+  pageUrl: string,
+  isEligibleDomain: (u: string) => boolean,
+): UrlCatalogEntry[] {
+  const out = new Map<string, UrlCatalogEntry>();
+  const base = root.ownerDocument?.baseURI?.startsWith('http') ? root.ownerDocument.baseURI : pageUrl;
+  const add = (raw: string | null, source: UrlCatalogEntry['source'], evidenceSnippet?: string): void => {
+    if (!raw) return;
+    try {
+      const abs = new URL(raw, base);
+      if (!SCHEME_OK.test(abs.href)) return;
+      if (!isEligibleDomain(abs.href)) return;
+      if (out.has(abs.href)) return;
+      out.set(abs.href, { url: abs.href, source, evidence: { url: pageUrl, snippet: evidenceSnippet } });
+    } catch {
+      // unresolvable — skip
+    }
+  };
+  scanCatalogUrls(root, base, pageUrl, add);
+  return [...out.values()];
+}
+
+/** Element scan shared by both catalog paths (bounded by the selector). */
+function scanCatalogUrls(
+  scope: ParentNode,
+  base: string,
+  pageUrl: string,
+  add: (raw: string | null, source: UrlCatalogEntry['source'], evidenceSnippet?: string) => void,
+): void {
+  for (const el of scope.querySelectorAll(URL_ATTR_SELECTOR)) {
     const tag = el.tagName.toLowerCase();
     const raw = el.getAttribute('href') ?? el.getAttribute('src') ?? el.getAttribute('action') ?? el.getAttribute('data-url') ?? el.getAttribute('data-src') ?? el.getAttribute('data-href');
     if (!raw || raw.startsWith('data:') || raw.startsWith('blob:') || raw.startsWith('#')) continue;
@@ -580,29 +638,11 @@ export function collectCatalogUrls(doc: Document, pageUrl: string, isEligibleDom
       const rel = el.getAttribute('rel') ?? '';
       if (rel === 'canonical') snip = `canonical ${raw.slice(0, 100)}`;
       source = 'meta';
-    } else if (tag.startsWith('data-')) {
-      source = 'other';
-    } else if (tag.startsWith('data-') || el.hasAttribute('data-url') || el.hasAttribute('data-src') || el.hasAttribute('data-href')) {
+    } else if (el.hasAttribute('data-url') || el.hasAttribute('data-src') || el.hasAttribute('data-href')) {
       source = 'other';
     }
     add(raw, source, snip);
   }
-
-  // canonical + meta refresh (explicit evidence)
-  for (const m of doc.querySelectorAll('meta[http-equiv="refresh" i]')) {
-    const content = m.getAttribute('content') ?? '';
-    const urlMatch = content.match(/url=([^;]+)/i);
-    const refreshTarget = urlMatch?.[1]?.trim();
-    if (refreshTarget) add(refreshTarget, 'meta', `meta refresh ${content.slice(0, 100)}`);
-  }
-
-  // JS string literals: absolute URLs + fetch/XHR paths (bounded)
-  for (const code of collectInlineScripts(doc)) {
-    const bounded = code.length > MAX_INLINE_SCRIPT_CHARS ? code.slice(0, MAX_INLINE_SCRIPT_CHARS) : code;
-    for (const u of jsStringUrls(bounded, pageUrl)) add(u, 'inline-js', 'inline script');
-  }
-
-  return [...out.values()];
 }
 
 /** URL strings inside JS text: absolute + fetch/xhr/axios path patterns. */

@@ -14,6 +14,7 @@ import type { MessagePayloads, ParamHuntMessage, ScopeView } from '@core/messagi
 import type { FindingDraft, ModuleDefinition } from '@shared/types/module';
 import type { ParamObservation, ParamRecord } from '@shared/types/param';
 import type { UrlsStore } from '@core/results/urls';
+import type { UrlCandidate, UrlSource } from '@shared/types/http';
 import type { EndpointsStore } from '@core/results/endpoints';
 import { isInScope } from '@shared/scope';
 import { loadSettingsCached, type DiscoveryConfig } from '@shared/settings';
@@ -240,7 +241,7 @@ export function createParamDiscovery(
   async function processObservations(
     observations: readonly ParamObservation[],
     scriptSrcs: readonly string[],
-    urls: readonly string[],
+    urlCandidates: readonly UrlCandidate[],
     contentEndpoints: readonly import('./lib/endpoints').EndpointCandidate[],
     tabId: number | undefined,
     pageUrl: string,
@@ -268,10 +269,21 @@ export function createParamDiscovery(
     });
     const stored = batch.stored;
     const duplicates = batch.duplicates;
-    // URL catalog (page sources; network sources arrive via http-analyzer)
-    if (urls.length > 0) {
-      const added = await deps.urlsStore.addMany(urls.map((u) => ({ url: u, source: 'page' as const })));
-      debugLog('store', `url catalog: ${added} new URLs`);
+    // URL catalog: structured candidates preserve their source attribution;
+    // the scanned page URL itself is always registered (page source)
+    const urlInputs: Array<{ url: string; method?: 'GET' | 'POST'; source: UrlSource }> = [];
+    try {
+      if (pageUrl.startsWith('http')) urlInputs.push({ url: pageUrl, source: 'page' });
+    } catch {
+      // non-URL page context — skip page registration
+    }
+    for (const c of urlCandidates) {
+      if (c.url.startsWith('http')) urlInputs.push({ url: c.url, method: c.method, source: c.source });
+    }
+    if (urlInputs.length > 0) {
+      const catalogRes = await deps.urlsStore.addMany(urlInputs);
+      debugLog('store', `url catalog: ${catalogRes.added} new, ${catalogRes.updated} updated`);
+      if (catalogRes.added + catalogRes.updated > 0) broadcastEvent({ type: 'catalog/changed' });
     }
     // ENDPOINT catalog: bundle-mined + content-reported candidates
     const endpointInputs = [
@@ -295,8 +307,9 @@ export function createParamDiscovery(
       })),
     ];
     if (endpointInputs.length > 0) {
-      const added = await deps.endpointsStore.addMany(endpointInputs);
-      debugLog('store', `endpoint catalog: ${added} new endpoints from ${endpointInputs.length} candidates`);
+      const catalogRes = await deps.endpointsStore.addMany(endpointInputs);
+      debugLog('store', `endpoint catalog: ${catalogRes.added} new, ${catalogRes.updated} updated`);
+      if (catalogRes.added + catalogRes.updated > 0) broadcastEvent({ type: 'catalog/changed' });
     }
     debugLog('store', `stored ${stored} new, ${duplicates} known (occurrences updated)`);
     // ONE broadcast per batch — UIs refresh once, not per finding
@@ -308,13 +321,13 @@ export function createParamDiscovery(
   async function collectFromTab(tabId: number, requestId: string): Promise<{
     observations: ParamObservation[];
     scriptSrcs: string[];
-    urls: string[];
+    urls: UrlCandidate[];
     endpoints: import('./lib/endpoints').EndpointCandidate[];
   } | null> {
     try {
       const reply = await chrome.tabs.sendMessage<
         { type: 'scan/run'; requestId: string },
-        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[]; urls: string[]; endpoints: import('./lib/endpoints').EndpointCandidate[] } }
+        { ok: boolean; data?: { observations: ParamObservation[]; scriptSrcs: string[]; urls: UrlCandidate[]; endpoints: import('./lib/endpoints').EndpointCandidate[] } }
       >(tabId, { type: 'scan/run', requestId });
       if (reply?.ok && reply.data) {
         return {

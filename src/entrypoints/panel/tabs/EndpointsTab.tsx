@@ -18,7 +18,8 @@ export default function EndpointsTab({ origin }: { origin: string }) {
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
   const [category, setCategory] = useState<'all' | EndpointCategory>('all');
-  const [method, setMethod] = useState<'all' | string>('all');
+  const [method, setMethod] = useState<string>('all');
+  const [sourceF, setSourceF] = useState<string>('all');
   const [expanded, setExpanded] = useState<string | null>(null);
   const [flash, copyError, doCopy] = useCopyFlash();
 
@@ -36,10 +37,21 @@ export default function EndpointsTab({ origin }: { origin: string }) {
 
   useEffect(() => refresh(origin), [origin]);
 
+  // LIVE SYNC: new endpoint catalog data refreshes the view
+  useEffect(() => {
+    const onChanged = (msg: unknown) => {
+      const t = (msg as { type?: string })?.type;
+      if (t === 'catalog/changed' || t === 'findings/changed') refresh(origin);
+    };
+    chrome.runtime.onMessage.addListener(onChanged);
+    return () => chrome.runtime.onMessage.removeListener(onChanged);
+  }, [origin]);
+
   const rows = useMemo(() => {
     let list = endpoints ?? [];
     if (category !== 'all') list = list.filter((e) => e.category === category);
     if (method !== 'all') list = list.filter((e) => e.method === method);
+    if (sourceF !== 'all') list = list.filter((e) => (e.sources ?? []).includes(sourceF as never));
     const needle = filter.trim().toLowerCase();
     if (!needle) return list;
     return list.filter(
@@ -51,29 +63,27 @@ export default function EndpointsTab({ origin }: { origin: string }) {
     <div className="flex h-full flex-col">
       <Toast error={error ?? copyError} message={null} />
       <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
-        {CATEGORIES.map((c) => (
-          <button
-            key={c}
-            onClick={() => setCategory(c)}
-            className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
-              category === c ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            {c}
-          </button>
-        ))}
-        <span className="mx-1 h-4 w-px bg-slate-700" />
-        {METHODS.map((m) => (
-          <button
-            key={m}
-            onClick={() => setMethod(m)}
-            className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${
-              method === m ? 'bg-sky-600 text-white' : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            {m}
-          </button>
-        ))}
+        <select value={category} onChange={(e) => setCategory(e.target.value as typeof category)} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-slate-300 outline-none">
+          {CATEGORIES.map((c) => (
+            <option key={c} value={c}>Category: {c}</option>
+          ))}
+        </select>
+        <select value={method} onChange={(e) => setMethod(e.target.value)} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-slate-300 outline-none">
+          {METHODS.map((m) => (
+            <option key={m} value={m}>Method: {m}</option>
+          ))}
+        </select>
+        <select value={sourceF} onChange={(e) => setSourceF(e.target.value)} className="rounded bg-slate-800 px-1.5 py-1 text-[10px] text-slate-300 outline-none">
+          <option value="all">Source: All</option>
+          <option value="js-bundle">JS Bundle</option>
+          <option value="inline-js">Inline JS</option>
+          <option value="axios">Axios</option>
+          <option value="fetch">Fetch</option>
+          <option value="xhr">XHR</option>
+          <option value="network">Network</option>
+          <option value="config">Config</option>
+          <option value="router">Router</option>
+        </select>
         <span className="ml-auto text-xs text-slate-400">{endpoints ? `${rows.length} endpoints` : '…'}</span>
       </div>
       <div className="border-b border-slate-700 px-3 py-2">

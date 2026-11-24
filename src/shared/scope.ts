@@ -70,3 +70,61 @@ export function isInScope(url: string, ctx: ScopeContext): ScopeDecision {
 
   return { inScope: false, reason: 'out-of-scope' };
 }
+
+
+/**
+ * Request-scoped scope check — origin-aware, unlike isInScope's full-URL
+ * pattern matching. Used by the webRequest gate where the "current origin"
+ * is the origin the user is actively researching.
+ *
+ * Rules: exclusions always win; an exact origin match (scheme+host+port)
+ * against the active research origins accepts the request; explicit
+ * allowlist patterns still extend scope. A bare-origin allowlist pattern
+ * also matches any URL on that origin (paths are not required to match).
+ */
+export interface RequestScopeContext {
+  activeOrigins: readonly string[];
+  allowlist?: readonly string[];
+  exclusions?: readonly string[];
+}
+
+export function isRequestInScope(url: string, ctx: RequestScopeContext): ScopeDecision {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { inScope: false, reason: 'out-of-scope' };
+  }
+
+  for (const pattern of ctx.exclusions ?? []) {
+    if (matchesPattern(parsed, pattern)) return { inScope: false, reason: 'excluded' };
+    const p = pattern.trim();
+    if (p && !p.includes('://') && p.toLowerCase().replace(/^\*\./, '') === parsed.hostname.toLowerCase()) {
+      return { inScope: false, reason: 'excluded' };
+    }
+  }
+
+  for (const origin of ctx.activeOrigins) {
+    try {
+      if (parsed.origin === new URL(origin).origin) {
+        return { inScope: true, reason: 'current-origin' };
+      }
+    } catch {
+      // malformed active origin — skip
+    }
+  }
+
+  for (const pattern of ctx.allowlist ?? []) {
+    if (matchesPattern(parsed, pattern)) return { inScope: true, reason: 'allowlist' };
+    const p = pattern.trim();
+    if (p && !p.includes('://') && !p.includes('*')) {
+      const host = parsed.hostname.toLowerCase();
+      const target = p.toLowerCase().replace(/^\*\./, '');
+      if (host === target || host.endsWith(`.${target}`)) {
+        return { inScope: true, reason: 'allowlist' };
+      }
+    }
+  }
+
+  return { inScope: false, reason: 'out-of-scope' };
+}

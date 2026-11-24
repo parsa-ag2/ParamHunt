@@ -17,6 +17,7 @@
 import { Engine } from '@core/engine/Engine';
 import { createChromeStorageAdapter } from '@core/storage/chromeStorageAdapter';
 import { isRequest, type ParamHuntMessage } from '@core/messaging/protocol';
+import { broadcastEvent } from '@core/messaging/bridge';
 import { createResultsManager, type RequestHandlers } from '@modules/results-manager';
 import { createParamDiscovery } from '@modules/param-discovery';
 import { createHttpAnalyzer, createRequestScopeGate } from '@modules/http-analyzer';
@@ -45,6 +46,43 @@ export default defineBackground(() => {
   const results = createResultsManager(storage);
   const urlsStore = new UrlsStore(storage, STORAGE_KEYS.urls);
   const endpointsStore = new EndpointsStore(storage, STORAGE_KEYS.endpoints);
+  /** Coalesced catalog broadcast — bursts of network events → ≤1 event/1.5s */
+  let lastCatalogBroadcast = 0;
+  let catalogBroadcastTimer: ReturnType<typeof setTimeout> | undefined;
+  function broadcastCatalogChanged(): void {
+    const now = Date.now();
+    if (now - lastCatalogBroadcast >= 1_500) {
+      lastCatalogBroadcast = now;
+      broadcastEvent({ type: 'catalog/changed' });
+      return;
+    }
+    if (catalogBroadcastTimer) return;
+    catalogBroadcastTimer = setTimeout(() => {
+      catalogBroadcastTimer = undefined;
+      lastCatalogBroadcast = Date.now();
+      broadcastEvent({ type: 'catalog/changed' });
+    }, 1_500);
+  }
+
+  // catalog broadcast: wrap addMany so every write path (discovery, network,
+  // scan triggers) publishes ONE coalesced event without per-write overhead
+  const notifyCatalog = () => broadcastCatalogChanged();
+  const urlsStoreWithBroadcast = {
+    ...urlsStore,
+    addMany: async (inputs: Parameters<typeof urlsStore.addMany>[0]) => {
+      const r = await urlsStore.addMany(inputs);
+      if (r.added + r.updated > 0) notifyCatalog();
+      return r;
+    },
+  };
+  const endpointsStoreWithBroadcast = {
+    ...endpointsStore,
+    addMany: async (inputs: Parameters<typeof endpointsStore.addMany>[0]) => {
+      const r = await endpointsStore.addMany(inputs);
+      if (r.added + r.updated > 0) notifyCatalog();
+      return r;
+    },
+  };
   const gate = createRequestScopeGate();
   const discovery = createParamDiscovery(results, { urlsStore, endpointsStore, noteOrigin: gate.note });
   const http = createHttpAnalyzer(storage, urlsStore, endpointsStore, gate, {

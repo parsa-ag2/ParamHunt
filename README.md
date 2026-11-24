@@ -17,14 +17,14 @@ A Chrome extension for browser-based security research: it **discovers and catal
   - HTML forms: action, method, inputs/selects/textareas, **hidden inputs**
   - Standalone DOM controls and `data-param` attributes
   - JavaScript sources: URL literals, `URLSearchParams` usage, param/config object keys (analyzed as text, never executed)
-  - **Network requests**: URLs and query parameter names from browser-generated requests (metadata only — no bodies, headers, or credentials) — observed URLs join the same URL catalog
+  - **Network requests**: URLs and query parameter names from browser-generated requests (metadata only — no bodies, headers, or credentials) — observed URLs join the URL catalog and observed paths join **Endpoints**
   - **Cookies** (names + metadata, values never read) and **storage keys** (names + sizes, values never read)
 - **Deduplication** — the same parameter seen across pages/sources is merged into one entry with occurrence counts, source breakdown, method/input-type context, and a confidence rating.
 - **Scope control** — observes the current site's origin by default; extend it with an allowlist (domain or glob patterns) and exclusions in Options. Exclusions always win. Out-of-scope pages are never collected.
 - **DevTools workbench** — F12 → *ParamHunt* tab, organized into real views:
   - **Overview** — live counters (parameters, URLs, requests, cookies), engine status
   - **Parameters** — searchable/sortable table (source, method, type, occurrences, **Found At**), source filters, detail view listing every discovery location (script URL + line/column + code snippet — copyable), local value inspector, researcher notes, per-row **Copy**, **Copy All** (unique), **Copy Selected**
-  - **URLs** — observed URLs grouped by origin, expandable to parameters, copy URL/path/query/names (sensitive values masked by default)
+  - **URLs** — comprehensive URL catalog: page URL, links, form actions, script srcs, canonical/meta-refresh, iframes/media, `data-*` URL attributes, inline-JS literals and observed network requests — with per-source attribution (a URL found by several sources keeps all of them), method/type filters, expandable details and copy actions (sensitive values masked by default)
   - **Endpoints** — real endpoint discovery from first-party JavaScript, inline scripts and observed network requests: `fetch`/`axios`/`XMLHttpRequest`/router patterns with exact source evidence (file, line, column, snippet), method + confidence, categories (API/AUTH/ADMIN/…), search + filters
   - **Cookies** — metadata only (name/domain/path/flags); values are never displayed or copied
   - **Storage** — localStorage/sessionStorage key names + sizes on demand; values never collected
