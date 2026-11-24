@@ -35,7 +35,9 @@ export interface EndpointExtractOptions {
 }
 
 interface Locator {
-  locate(index: number): { line: number; column: number; snippet: string };
+  lineAt(index: number): number;
+  columnAt(index: number): number;
+  snippetAt(index: number): string;
 }
 
 function makeLocator(code: string): Locator {
@@ -70,9 +72,12 @@ export function extractEndpoints(
   if (code.length === 0) return out;
   const locator = makeLocator(code);
   const ev = (index: number): Evidence => {
-    const located = locator.locate(index);
-    const s = located.snippet.length > MAX_EVIDENCE_SNIPPET ? located.snippet.slice(0, MAX_EVIDENCE_SNIPPET) : located.snippet;
-    return { url: opts.sourceUrl ?? opts.pageUrl, line: located.line, column: located.column, snippet: s };
+    return {
+      url: opts.sourceUrl ?? opts.pageUrl,
+      line: locator.lineAt(index),
+      column: locator.columnAt(index),
+      snippet: locator.snippetAt(index),
+    };
   };
 
   // same-file baseURL (axios.create({ baseURL: "..." }))

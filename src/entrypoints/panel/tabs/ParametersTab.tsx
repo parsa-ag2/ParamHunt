@@ -1,44 +1,34 @@
 import React, { useMemo, useState } from 'react';
 import type { Finding, FindingPage } from '@shared/types/finding';
-import { sendRequest } from '@core/messaging/bridge';
 import { paramName, namesToClipboardText, uniqueParamNames } from '@modules/param-discovery/lib/format';
 import { groupParams, type GroupMode } from './grouping';
+import { isConfirmedParam } from '@shared/paramQuality';
 import { Badge, Chip, CopyButton, Empty, Toast, useCopyFlash } from '../ui';
+import { sendRequest } from '@core/messaging/bridge';
 
-/** Short "Found At" identifier — the most precise location available. */
-function foundAtLabel(f: Finding): string {
-  const d = f.detail as Record<string, unknown>;
-  const evidence = (d?.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>;
-  const first = evidence[0];
-  if (first?.url && first.line) {
-    let file = first.url;
-    try {
-      file = new URL(first.url).pathname.split('/').pop() || first.url;
-    } catch {
-      // keep raw
-    }
-    return `${file}:${first.line}`;
-  }
-  if (first?.url) {
-    try {
-      return `${new URL(first.url).pathname.split('/').pop() || first.url}`;
-    } catch {
-      return first.url;
-    }
-  }
-  const loc = String(d?.firstPageUrl ?? f.location ?? '');
-  try {
-    return new URL(loc).pathname || loc;
-  } catch {
-    return loc.slice(0, 40);
-  }
-}
+/**
+ * Parameter Explorer — v0.5 simplified toolbar:
+ *   [search] [All | Group by URL] [Source ▼] [More ▼] [Copy ▼]
+ * Method/sort/selection controls live inside "More"; copy variants inside
+ * "Copy". Weak JS-object candidates are hidden by default (the "possible"
+ * filter in More reveals them). Grouping is a memoized client-side
+ * transform of already-collected findings — switching modes never scans.
+ */
 
-const SOURCE_FILTERS = ['all', 'url', 'dom', 'form', 'js', 'network', 'cookie', 'storage'] as const;
+const SOURCE_FILTERS = [
+  { id: 'all', label: 'All' },
+  { id: 'url', label: 'URL' },
+  { id: 'dom', label: 'DOM' },
+  { id: 'form', label: 'Form' },
+  { id: 'js', label: 'JavaScript' },
+  { id: 'network', label: 'Network' },
+  { id: 'cookie', label: 'Cookies' },
+  { id: 'storage', label: 'Storage' },
+] as const;
+
 const METHOD_FILTERS = ['all', 'GET', 'POST', 'none'] as const;
 const MAX_RENDER_ROWS = 300;
 
-/** Parameter Explorer — search/filter/sort/select/copy/inspect/note. */
 export default function ParametersTab({
   page,
   error,
@@ -50,20 +40,24 @@ export default function ParametersTab({
   onRefresh: () => void;
   onBuildQuery: (names: string[], path: string) => void;
 }) {
+  const items = page?.items ?? [];
   const [filter, setFilter] = useState('');
-  const [source, setSource] = useState<(typeof SOURCE_FILTERS)[number]>('all');
-  const [methodF, setMethodF] = useState<(typeof METHOD_FILTERS)[number]>('all');
-  const [sort, setSort] = useState<'recent' | 'occurrences' | 'name'>('recent');
-  const [expanded, setExpanded] = useState<string | null>(null);
-  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [view, setView] = useState<'flat' | 'grouped'>('flat');
   const [groupMode, setGroupMode] = useState<GroupMode>('path');
   const [collapsePatterns, setCollapsePatterns] = useState(false);
+  const [source, setSource] = useState<string>('all');
+  const [methodF, setMethodF] = useState<'all' | 'GET' | 'POST' | 'none'>('all');
+  const [sort, setSort] = useState<'recent' | 'occurrences' | 'name'>('recent');
+  const [showPossible, setShowPossible] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expanded, setExpanded] = useState<string | null>(null);
   const [flash, copyError, doCopy] = useCopyFlash();
 
-  const items = page?.items ?? [];
   const rows = useMemo(() => {
-    let out = page?.items ?? [];
+    let out = items.filter(isConfirmedParam); // weak JS-object noise hidden by default
+    if (showPossible) out = items.filter((f) => !isConfirmedParam(f));
     if (source !== 'all') {
       out = out.filter((f) => {
         const sources = (f.detail as Record<string, unknown>)?.sources as Record<string, number> | undefined;
@@ -82,25 +76,21 @@ export default function ParametersTab({
     if (sort === 'name') sorted.sort((a, b) => paramName(a).localeCompare(paramName(b)));
     else if (sort === 'occurrences') sorted.sort((a, b) => b.occurrences - a.occurrences);
     return sorted;
-  }, [page, filter, source, sort]);
+  }, [items, filter, source, methodF, sort, showPossible]);
 
   const allNames = useMemo(() => uniqueParamNames(rows), [rows]);
-  /** Group-by-URL runs on ALREADY-COLLECTED data only — memoized, no scans. */
   const groups = useMemo(
     () => (view === 'grouped' ? groupParams(rows, { mode: groupMode, collapsePatterns }) : []),
     [view, rows, groupMode, collapsePatterns],
   );
+  const possibleCount = useMemo(() => items.filter((f) => !isConfirmedParam(f)).length, [items]);
 
   const copyRow = (f: Finding) => doCopy(paramName(f), f.id);
+  const copyPair = (f: Finding, value: string) => doCopy(`${paramName(f)}=${value}`, `pair-${f.id}`);
   const copyAll = () => doCopy(namesToClipboardText(allNames), '__all__');
+  const copyFiltered = () => doCopy(namesToClipboardText(uniqueParamNames(rows)), '__filtered__');
   const copySelected = () =>
     doCopy(namesToClipboardText(uniqueParamNames(rows.filter((f) => selected.has(f.id)))), '__sel__');
-  const copyFiltered = () => doCopy(namesToClipboardText(uniqueParamNames(rows)), '__filtered__');
-  const selectAll = () => setSelected(new Set(items.map((f) => f.id)));
-  const selectFiltered = () => setSelected((prev) => new Set([...prev, ...rows.map((f) => f.id)]));
-  const deselectAll = () => setSelected(new Set());
-  const invertSelection = () =>
-    setSelected((prev) => new Set((items ?? []).filter((f) => !prev.has(f.id)).map((f) => f.id)));
   const copyBySource = (src: string) =>
     doCopy(
       namesToClipboardText(
@@ -110,7 +100,12 @@ export default function ParametersTab({
       ),
       `src-${src}`,
     );
-  const copyPair = (f: Finding, value: string) => doCopy(`${paramName(f)}=${value}`, `pair-${f.id}`);
+
+  const selectAll = () => setSelected(new Set(items.map((f) => f.id)));
+  const selectFiltered = () => setSelected((prev) => new Set([...prev, ...rows.map((f) => f.id)]));
+  const deselectAll = () => setSelected(new Set());
+  const invertSelection = () =>
+    setSelected((prev) => new Set((items ?? []).filter((f) => !prev.has(f.id)).map((f) => f.id)));
 
   const setStatus = async (f: Finding, status: Finding['status']) => {
     await sendRequest({ type: 'findings/status', ids: [f.id], status });
@@ -121,69 +116,7 @@ export default function ParametersTab({
     <div className="flex h-full flex-col">
       <Toast error={error ?? copyError} message={null} />
 
-      {/* toolbar */}
-      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
-        {SOURCE_FILTERS.map((s) => (
-          <Chip key={s} active={source === s} onClick={() => setSource(s)}>
-            {s === 'all' ? 'all src' : s}
-          </Chip>
-        ))}
-        <span className="mx-1 h-4 w-px bg-slate-700" />
-        {METHOD_FILTERS.map((m) => (
-          <Chip key={m} active={methodF === m} onClick={() => setMethodF(m)}>
-            {m}
-          </Chip>
-        ))}
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value as typeof sort)}
-          className="ml-auto rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 outline-none"
-        >
-          <option value="recent">sort: recent</option>
-          <option value="occurrences">sort: occurrences</option>
-          <option value="name">sort: name</option>
-        </select>
-        <CopyButton onCopy={copyAll} flashKey="__all__" flash={flash} label={`Copy All (${allNames.length})`} disabled={allNames.length === 0} />
-        <CopyButton
-          onCopy={copySelected}
-          flashKey="__sel__"
-          flash={flash}
-          label={`Copy Selected (${selected.size})`}
-          disabled={selected.size === 0}
-        />
-        <CopyButton onCopy={copyFiltered} flashKey="__filtered__" flash={flash} label="Copy Filtered" disabled={rows.length === 0} />
-        {source !== 'all' && (
-          <CopyButton onCopy={() => void copyBySource(source)} flashKey={`src-${source}`} flash={flash} label={`Copy ${source}`} />
-        )}
-        <span className="mx-1 h-4 w-px bg-slate-700" />
-        <Chip onClick={selectAll}>Select All</Chip>
-        <Chip onClick={selectFiltered}>Select Filtered</Chip>
-        <Chip onClick={invertSelection}>Invert</Chip>
-        <Chip onClick={deselectAll}>Deselect All</Chip>
-        {selected.size > 0 && <span className="text-[10px] text-slate-400">{selected.size} selected</span>}
-      </div>
-
-      <div className="flex items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
-        <Chip active={view === 'flat'} onClick={() => setView('flat')}>All Parameters</Chip>
-        <Chip active={view === 'grouped'} onClick={() => setView('grouped')}>Group by URL</Chip>
-        {view === 'grouped' && (
-          <>
-            <span className="mx-1 h-4 w-px bg-slate-700" />
-            <Chip active={groupMode === 'path'} onClick={() => setGroupMode('path')}>by path</Chip>
-            <Chip active={groupMode === 'origin'} onClick={() => setGroupMode('origin')}>by origin</Chip>
-            <Chip active={groupMode === 'method'} onClick={() => setGroupMode('method')}>by method</Chip>
-            <label className="ml-2 flex items-center gap-1 text-[10px] text-slate-400">
-              <input
-                type="checkbox"
-                checked={collapsePatterns}
-                onChange={(e) => setCollapsePatterns(e.target.checked)}
-                className="accent-sky-500"
-              />
-              collapse /users/123 → /users/&#123;id&#125;
-            </label>
-          </>
-        )}
-      </div>
+      {/* row 1: search */}
       <div className="border-b border-slate-700 px-3 py-2">
         <input
           value={filter}
@@ -193,12 +126,140 @@ export default function ParametersTab({
         />
       </div>
 
-      {/* table (flat) + grouped-by-URL view */}
+      {/* row 2: mode + compact dropdowns */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-700 px-3 py-1.5">
+        <Chip active={view === 'flat'} onClick={() => setView('flat')}>All Parameters</Chip>
+        <Chip active={view === 'grouped'} onClick={() => setView('grouped')}>Group by URL</Chip>
+
+        <Dropdown label={`Source: ${source === 'all' ? 'All' : source}`} width="w-44">
+          {SOURCE_FILTERS.map((s) => (
+            <MenuItem
+              key={s.id}
+              active={source === s.id}
+              onClick={() => {
+                setSource(s.id);
+                setMoreOpen(false);
+              }}
+            >
+              {s.label}
+            </MenuItem>
+          ))}
+        </Dropdown>
+
+        <Dropdown label="More Filters" width="w-60" open={moreOpen} setOpen={setMoreOpen}>
+          <div className="space-y-1.5 p-2 text-[11px] text-slate-300">
+            <div className="flex items-center gap-1.5">
+              <span className="w-12 text-slate-500">method</span>
+              <select
+                value={methodF}
+                onChange={(e) => setMethodF(e.target.value as typeof methodF)}
+                className="flex-1 rounded bg-slate-800 px-1 py-0.5 text-[10px] outline-none"
+              >
+                {METHOD_FILTERS.map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="w-12 text-slate-500">sort</span>
+              <select
+                value={sort}
+                onChange={(e) => setSort(e.target.value as typeof sort)}
+                className="flex-1 rounded bg-slate-800 px-1 py-0.5 text-[10px] outline-none"
+              >
+                <option value="recent">recent</option>
+                <option value="occurrences">occurrences</option>
+                <option value="name">name</option>
+              </select>
+            </div>
+            <label className="flex items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={showPossible}
+                onChange={(e) => setShowPossible(e.target.checked)}
+                className="accent-sky-500"
+              />
+              Show possible ({possibleCount})
+            </label>
+            <div className="flex flex-wrap gap-1 border-t border-slate-700 pt-1.5">
+              <Chip onClick={selectAll}>Select All</Chip>
+              <Chip onClick={selectFiltered}>Select Filtered</Chip>
+              <Chip onClick={invertSelection}>Invert</Chip>
+              <Chip onClick={deselectAll}>Deselect All</Chip>
+            </div>
+          </div>
+        </Dropdown>
+
+        <Dropdown label="Copy ▾" width="w-52" open={copyOpen} setOpen={setCopyOpen}>
+          <MenuItem
+            onClick={() => {
+              void doCopy(namesToClipboardText(allNames), '__all__');
+              setCopyOpen(false);
+            }}
+          >
+            Copy All ({allNames.length})
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              void doCopy(namesToClipboardText(uniqueParamNames(rows)), '__filtered__');
+              setCopyOpen(false);
+            }}
+          >
+            Copy Filtered ({rows.length})
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              void doCopy(namesToClipboardText(uniqueParamNames(rows.filter((f) => selected.has(f.id)))), '__sel__');
+              setCopyOpen(false);
+            }}
+          >
+            Copy Selected ({selected.size})
+          </MenuItem>
+          {source !== 'all' && (
+            <MenuItem
+              onClick={() => {
+                copyBySource(source);
+                setCopyOpen(false);
+              }}
+            >
+              Copy by source: {source}
+            </MenuItem>
+          )}
+        </Dropdown>
+
+        {view === 'grouped' && (
+          <>
+            <Chip active={groupMode === 'path'} onClick={() => setGroupMode('path')}>path</Chip>
+            <Chip active={groupMode === 'origin'} onClick={() => setGroupMode('origin')}>origin</Chip>
+            <Chip active={groupMode === 'method'} onClick={() => setGroupMode('method')}>method</Chip>
+          </>
+        )}
+
+        <span className="ml-auto text-xs text-slate-400">
+          {page ? `${rows.length} of ${page.total} params` : '…'}
+        </span>
+      </div>
+
+      {view === 'grouped' && (
+        <div className="flex items-center gap-1.5 border-b border-slate-700 px-3 py-1">
+          <label className="flex items-center gap-1 text-[10px] text-slate-400">
+            <input
+              type="checkbox"
+              checked={collapsePatterns}
+              onChange={(e) => setCollapsePatterns(e.target.checked)}
+              className="accent-sky-500"
+            />
+            collapse /users/123 → /users/&#123;id&#125;
+          </label>
+        </div>
+      )}
+
+      {/* body */}
       <div className="flex-1 overflow-y-auto">
-        {view === 'grouped' ? (
-          page === null ? (
-            <Empty label="Loading…" />
-          ) : groups.length === 0 ? (
+        {page === null ? (
+          <Empty label="Loading…" />
+        ) : view === 'grouped' ? (
+          groups.length === 0 ? (
             <Empty label="Nothing to group yet — collect parameters first." />
           ) : (
             <ul className="text-xs">
@@ -211,7 +272,9 @@ export default function ParametersTab({
                   onCopyNames={() => void doCopy(namesToClipboardText(uniqueParamNames(g.items)), `g-${g.key}`)}
                   onCopyPairs={() =>
                     void doCopy(
-                      g.items.map((f) => `${paramName(f)}=${String((f.detail as Record<string, unknown>)?.firstSample ?? '')}`).join('\n'),
+                      g.items
+                        .map((f) => `${paramName(f)}=${String((f.detail as Record<string, unknown>)?.firstSample ?? '')}`)
+                        .join('\n'),
                       `gp-${g.key}`,
                     )
                   }
@@ -220,27 +283,25 @@ export default function ParametersTab({
               ))}
             </ul>
           )
-        ) : page === null ? (
-          <Empty label="Loading…" />
         ) : rows.length === 0 ? (
           <Empty
             label={
               (page?.total ?? 0) === 0
-                ? 'No parameters discovered for this site yet.\nBrowse the site — collection runs automatically.\nRescan injects the collector into tabs opened before install.'
-                : 'No parameters match the current filter.'
+                ? 'No parameters discovered for this site yet.\nBrowse the target site — collection runs automatically.'
+                : possibleCount > 0 && !showPossible
+                  ? `No confirmed parameters match.\n${possibleCount} possible (low-confidence) candidates exist —\nenable "Show possible" in More Filters.`
+                  : 'No parameters match the current filter.'
             }
           />
         ) : (
           <>
             <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-slate-800 text-slate-400">
+              <thead className="sticky top-0 z-10 bg-slate-800 text-slate-400">
                 <tr>
                   <th className="w-6 px-2 py-1.5" />
                   <th className="px-2 py-1.5 font-medium">Parameter</th>
                   <th className="px-2 py-1.5 font-medium">Source</th>
-                  <th className="px-2 py-1.5 font-medium">Method</th>
                   <th className="px-2 py-1.5 font-medium">Type</th>
-                  <th className="px-2 py-1.5 font-medium">×Seen</th>
                   <th className="px-2 py-1.5 font-medium">Found At</th>
                   <th className="w-16 px-2 py-1.5" />
                 </tr>
@@ -250,8 +311,6 @@ export default function ParametersTab({
                   const d = f.detail as Record<string, unknown>;
                   const sources = (d.sources ?? {}) as Record<string, number>;
                   const kinds = (d.kinds ?? []) as string[];
-                  const methods = ((d.methods ?? []) as string[]).join(', ');
-                  const inputTypes = ((d.inputTypes ?? []) as string[]).join(', ');
                   const name = paramName(f);
                   const open = expanded === f.id;
                   return (
@@ -282,9 +341,7 @@ export default function ParametersTab({
                             ))}
                           </span>
                         </td>
-                        <td className="px-2 py-1.5 text-slate-400">{methods || '—'}</td>
-                        <td className="px-2 py-1.5 text-slate-400">{inputTypes || kinds[0] || '—'}</td>
-                        <td className="px-2 py-1.5 text-slate-300">{`×${f.occurrences}`}</td>
+                        <td className="px-2 py-1.5 text-slate-400">{kinds[0] ?? '—'}</td>
                         <td className="px-2 py-1.5">
                           <span className="block max-w-40 truncate font-mono text-[10px] text-slate-400" title={foundAtLabel(f)}>
                             {foundAtLabel(f)}
@@ -294,9 +351,7 @@ export default function ParametersTab({
                           <CopyButton onCopy={() => void copyRow(f)} flashKey={f.id} flash={flash} label="Copy" />
                         </td>
                       </tr>
-                      {open && (
-                        <DetailRow finding={f} onCopyPair={copyPair} onRefresh={onRefresh} doCopy={doCopy} flash={flash} />
-                      )}
+                      {open && <DetailRow finding={f} onCopyPair={copyPair} onRefresh={onRefresh} doCopy={doCopy} flash={flash} />}
                     </React.Fragment>
                   );
                 })}
@@ -314,7 +369,94 @@ export default function ParametersTab({
   );
 }
 
-/** Expandable detail + interactive local value inspector + note. */
+/** Short "Found At" identifier — the most precise location available. */
+function foundAtLabel(f: Finding): string {
+  const d = f.detail as Record<string, unknown>;
+  const evidence = (d?.evidence ?? []) as Array<{ url?: string; line?: number; column?: number }>;
+  const first = evidence[0];
+  if (first?.url && first.line) {
+    let file = first.url;
+    try {
+      file = new URL(first.url).pathname.split('/').pop() || first.url;
+    } catch {
+      // keep raw
+    }
+    return `${file}:${first.line}`;
+  }
+  if (first?.url) {
+    try {
+      return new URL(first.url).pathname.split('/').pop() || first.url;
+    } catch {
+      return first.url;
+    }
+  }
+  const loc = String(d?.firstPageUrl ?? f.location ?? '');
+  try {
+    return new URL(loc).pathname || loc;
+  } catch {
+    return loc.slice(0, 40);
+  }
+}
+
+/** Minimal dropdown (no dependencies). Closes on outside click. */
+function Dropdown({
+  label,
+  width,
+  open,
+  setOpen,
+  children,
+}: {
+  label: string;
+  width?: string;
+  open?: boolean;
+  setOpen?: (v: boolean) => void;
+  children: React.ReactNode;
+}) {
+  const [internal, setInternal] = useState(false);
+  const isOpen = open ?? internal;
+  const setOpenFn = setOpen ?? setInternal;
+  return (
+    <span className="relative">
+      <button
+        onClick={() => setOpenFn(!isOpen)}
+        className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] text-slate-300 hover:text-slate-200"
+      >
+        {label} {isOpen ? '▴' : '▾'}
+      </button>
+      {isOpen && (
+        <>
+          <span className="fixed inset-0 z-20" onClick={() => setOpenFn(false)} />
+          <div className={`absolute left-0 top-full z-30 mt-1 ${width ?? 'w-48'} rounded border border-slate-700 bg-slate-900 shadow-lg`}>
+            {children}
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
+function MenuItem({
+  active,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`block w-full px-3 py-1 text-left text-[11px] hover:bg-slate-800 ${
+        active ? 'text-sky-300' : 'text-slate-300'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Expandable detail: evidence locations + interactive local value inspector + note. */
 function DetailRow({
   finding,
   onCopyPair,
@@ -338,11 +480,12 @@ function DetailRow({
     onRefresh();
   };
 
+  const evidence = (d.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>;
+
   return (
     <tr className="border-t border-slate-800 bg-slate-800/40">
-      <td colSpan={8} className="px-3 py-2">
+      <td colSpan={7} className="px-3 py-2">
         <div className="space-y-2 text-[11px] text-slate-300">
-          {/* interactive local inspector — edits stay local until copied */}
           <div className="flex items-center gap-2">
             <span className="font-mono text-sky-300">{name}</span>
             <span className="text-slate-500">=</span>
@@ -363,65 +506,49 @@ function DetailRow({
             The editor is local to this panel — it never touches the page or sends requests.
           </p>
 
-          <dl className="grid grid-cols-[90px_1fr] gap-x-2 gap-y-1">
-            <dt className="text-slate-500">kinds</dt>
-            <dd>{((d.kinds ?? []) as string[]).join(', ') || '—'}</dd>
-            <dt className="text-slate-500">first page</dt>
-            <dd className="break-all font-mono">{String(d.firstPageUrl ?? '—')}</dd>
-            <dt className="text-slate-500">last page</dt>
-            <dd className="break-all font-mono">{String(d.lastPageUrl ?? '—')}</dd>
-            <dt className="text-slate-500">first seen</dt>
-            <dd>{new Date(finding.firstSeenAt).toLocaleString()}</dd>
-          </dl>
-
-          {/* Found At — every distinct discovery location with exact evidence */}
-          {((d.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>).length >
-            0 && (
+          {evidence.length > 0 && (
             <div className="space-y-1">
-              <div className="text-[10px] uppercase text-slate-500">Found At — discovery evidence</div>
-              {((d.evidence ?? []) as Array<{ url?: string; line?: number; column?: number; snippet?: string }>).map(
-                (e, i) => (
-                  <div key={`${e.url}-${e.line}-${i}`} className="rounded bg-slate-900 p-1.5">
-                    <div className="flex items-center gap-2 text-[10px]">
-                      <span className="truncate font-mono text-sky-300" title={e.url}>
-                        {e.url ?? '—'}
+              <div className="text-[10px] uppercase text-slate-500">Found At — {evidence.length} location(s)</div>
+              {evidence.map((e, i) => (
+                <div key={`${e.url}-${i}`} className="rounded bg-slate-900 p-1.5">
+                  <div className="flex items-center gap-2 text-[10px]">
+                    <span className="truncate font-mono text-sky-300" title={e.url}>
+                      {e.url ?? '—'}
+                    </span>
+                    {e.line != null && (
+                      <span className="text-slate-400">
+                        Line {e.line}
+                        {e.column != null ? `, Column ${e.column}` : ''}
                       </span>
-                      {e.line != null && (
-                        <span className="text-slate-400">
-                          Line {e.line}
-                          {e.column != null ? `, Column ${e.column}` : ''}
-                        </span>
-                      )}
-                      <span
-                        className="ml-auto flex gap-1"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          if (e.url) void doCopy(e.url, `ev-url-${i}`);
-                        }}
-                      >
-                        <CopyButton onCopy={() => void doCopy(e.url ?? '', `ev-url-${i}`)} flashKey={`ev-url-${i}`} flash={flash} label="Copy URL" />
-                        {e.line != null && (
-                          <CopyButton
-                            onCopy={() => void doCopy(`${e.url ?? ''}:${e.line}${e.column != null ? `,${e.column}` : ''}`, `ev-loc-${i}`)}
-                            flashKey={`ev-loc-${i}`}
-                            flash={flash}
-                            label="Copy location"
-                          />
-                        )}
-                      </span>
-                    </div>
-                    {e.snippet && (
-                      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-1 font-mono text-[10px] text-emerald-300">
-                        {e.snippet}
-                      </pre>
                     )}
+                    <span
+                      className="ml-auto flex gap-1"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        if (e.url) void doCopy(e.url, `ev-url-${i}`);
+                      }}
+                    >
+                      <CopyButton onCopy={() => void doCopy(e.url ?? '', `ev-url-${i}`)} flashKey={`ev-url-${i}`} flash={flash} label="Copy URL" />
+                      {e.line != null && (
+                        <CopyButton
+                          onCopy={() => void doCopy(`${e.url ?? ''}:${e.line}${e.column != null ? `,${e.column}` : ''}`, `ev-loc-${i}`)}
+                          flashKey={`ev-loc-${i}`}
+                          flash={flash}
+                          label="Copy location"
+                        />
+                      )}
+                    </span>
                   </div>
-                ),
-              )}
+                  {e.snippet && (
+                    <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-1 font-mono text-[10px] text-emerald-300">
+                      {e.snippet}
+                    </pre>
+                  )}
+                </div>
+              ))}
             </div>
           )}
 
-          {/* note + triage */}
           <div className="flex items-start gap-2">
             <textarea
               rows={2}
@@ -461,7 +588,6 @@ function DetailRow({
     </tr>
   );
 }
-
 
 /** Grouped-by-URL row: header with real counts + actions, expandable param list. */
 function GroupRow({

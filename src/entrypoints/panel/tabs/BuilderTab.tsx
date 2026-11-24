@@ -44,7 +44,7 @@ export default function BuilderTab({
 
   // values
   const [bulkValue, setBulkValue] = useState('');
-  const [values, setValues] = useState<Record<string, string>>({});
+  const [values, setValues] = useState<Record<string, string>>({}); // keyed by LOWERCASE name
   const [baseUrl, setBaseUrl] = useState(origin ? `${origin}/` : '');
   const [format, setFormat] = useState<OutputFormat>('query');
   const [flash, copyError, doCopy] = useCopyFlash();
@@ -70,7 +70,9 @@ export default function BuilderTab({
         const name = paramName(f);
         const d = f.detail as Record<string, unknown>;
         const sample = typeof d.firstSample === 'string' ? d.firstSample : '';
-        return { name, value: values[name] ?? sample ?? '' };
+        // CASE-INSENSITIVE value lookup — fixes User_ID vs user_id assignment drift
+        const assigned = values[name.toLowerCase()] ?? values[name] ?? '';
+        return { name, value: assigned !== '' ? assigned : (values[name] ?? sample ?? '') };
       });
   }, [items, selectedNames, values]);
 
@@ -83,6 +85,7 @@ export default function BuilderTab({
   useEffect(() => {
     if (!seed || seed.names.length === 0) return;
     setSelectedNames(new Set(seed.names.map((n) => n.toLowerCase())));
+    // values map is lowercase-keyed; seeds stay display-name only
     if (seed.baseUrl) setBaseUrl(seed.baseUrl);
   }, [seed]);
 
@@ -100,6 +103,8 @@ export default function BuilderTab({
     setBulkValue(v);
     setValues((prev) => {
       const n = { ...prev };
+      // selectedNames are lowercase keys — keep the map key-consistent so
+      // case-variant parameters (User_ID vs user_id) resolve correctly
       for (const name of selectedNames) n[name] = v;
       return n;
     });

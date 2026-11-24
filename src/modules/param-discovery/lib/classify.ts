@@ -46,6 +46,21 @@ const KNOWN_LIB_FILES = [
   'sdk.js', 'widget.js',
 ];
 
+/**
+ * STRICT vendor-only filename patterns — definitionally framework/polyfill
+ * files with no application code. Apply to SAME-ORIGIN scripts too
+ * (polyfills-<hash>.js, chunk-vendors-<hash>.js, runtime chunks).
+ * Deliberately NOT applied to app-entry names (_app-*, main-*, index-*) —
+ * those are mixed bundles that must keep getting analyzed.
+ */
+const STRICT_VENDOR_ONLY = [
+  /^polyfills?([-_.][\w.-]*)?\.js$/i,
+  /^chunk[-_.]?vendors?([-_.][\w-]+)?\.js$/i,
+  /^vendors?(~[\w.-]+)?\.js$/i,
+  /^vendors?\.[a-f0-9]{8,}\.js$/i,
+  /^runtime([-_.~][\w.-]*)?\.js$/i,
+];
+
 /** Weak naming patterns — third-party signals only on cross-origin scripts. */
 const WEAK_VENDOR_PATTERNS = [
   /(^|\/)(vendors?~?[.\-]?)(main|app|chunk)?[.-]?(\d+)?[.-]?vendor/i,
@@ -90,19 +105,23 @@ export function classifyScript(srcUrl: string, pageOrigin: string): ScriptVerdic
   }
   const scriptHost = u.hostname.toLowerCase();
   const sameOrigin = u.origin === pageOrigin || scriptHost === pageHost;
+  const file = u.pathname.split('/').pop() ?? '';
+  const fileLower = file.toLowerCase();
 
   // known third-party infrastructure → excluded by default (strongest signal)
   if (KNOWN_THIRD_PARTY_HOSTS.some((h) => scriptHost === h || scriptHost.endsWith(`.${h}`))) {
     return 'third-party';
   }
 
-  const file = u.pathname.split('/').pop() ?? '';
-  const fileLower = file.toLowerCase();
-
   // exact well-known library filenames → vendor everywhere
   if (KNOWN_LIB_FILES.includes(fileLower)) return 'vendor';
 
-  if (sameOrigin) return 'first-party';
+  if (sameOrigin) {
+    // strict vendor-only files (polyfills/vendor/runtime chunks) are
+    // framework-only even when self-hosted — nothing app-related to mine
+    if (STRICT_VENDOR_ONLY.some((rx) => rx.test(file))) return 'vendor';
+    return 'first-party';
+  }
 
   // shared registrable domain (assets.example.com for example.com) → first-party
   if (scriptHost && pageHost && registrableDomain(scriptHost) === registrableDomain(pageHost)) {

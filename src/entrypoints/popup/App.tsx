@@ -5,6 +5,7 @@ import type { FindingPage } from '@shared/types/finding';
 import { copyText } from '@shared/clipboard';
 import { APP } from '@shared/constants';
 import { namesToClipboardText, paramName, uniqueParamNames } from '@modules/param-discovery/lib/format';
+import { isConfirmedParam } from '@shared/paramQuality';
 
 /**
  * Popup — compact summary for the site the user is browsing:
@@ -35,7 +36,9 @@ export default function App() {
       ]);
       setScope(scopeView);
       // site-scoped: parameters first seen on this tab's origin
-      const siteItems = findings.items.filter((f) => f.location.startsWith(scopeView.origin));
+      const siteItems = findings.items
+        .filter((f) => f.location.startsWith(scopeView.origin))
+        .filter(isConfirmedParam); // popup counts the SAME confirmed set as the panel
       setPage({ ...findings, items: siteItems, total: siteItems.length });
       setError(null);
     } catch (err) {

@@ -269,40 +269,21 @@ function controlObservation(
 
 // ─── D. JavaScript (text analysis — never executed) ─────────────────────────
 
-const QS_IN_STRING = /[?&]([A-Za-z_][\w.\[\]-]{0,32})=([^&"'`<>\s]{0,48})/g;
-const USP_VAR = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+URLSearchParams/g;
-const USP_USE = (v: string) =>
-  new RegExp(`\\b${v.replace(/\$/g, '\\$')}\\.(?:get|getAll|set|append|has)\\(['"]([^'"]{1,40})['"]`, 'g');
-const ANCHORED_OBJ = /(?:params|query|body|payload|filters|fields)\s*:\s*\{/g;
-const OBJ_KEY = /(?:^|[,{])\s*['"]?([A-Za-z_$][\w$-]{1,32})['"]?\s*:/g;
-
-/** Minified-code guard: JS-source names shorter than 2 chars are artifacts. */
-const MIN_JS_NAME_LEN = 2;
-
 /**
  * Line/Column locator — ONE pass to collect line offsets, then O(log n)
  * binary search per match. Keeps evidence extraction cheap on 1MB bundles.
  */
 export class LineLocator {
   private readonly lineStarts: number[];
-  private readonly lines: string[];
   constructor(private readonly code: string) {
     const starts = [0];
-    const lines: string[] = [];
-    let start = 0;
     for (let i = 0; i < code.length; i++) {
-      if (code.charCodeAt(i) === 10) {
-        lines.push(code.slice(start, i));
-        start = i + 1;
-        starts.push(i + 1);
-      }
+      if (code.charCodeAt(i) === 10) starts.push(i + 1);
     }
-    lines.push(code.slice(start));
     this.lineStarts = starts;
-    this.lines = lines;
   }
 
-  locate(index: number): { line: number; column: number; snippet: string } {
+  lineAt(index: number): number {
     let lo = 0;
     let hi = this.lineStarts.length - 1;
     while (lo < hi) {
@@ -310,15 +291,147 @@ export class LineLocator {
       if ((this.lineStarts[mid] ?? 0) <= index) lo = mid;
       else hi = mid - 1;
     }
-    const line = lo + 1; // 1-based
-    const column = index - (this.lineStarts[lo] ?? 0) + 1; // 1-based
-    const raw = this.lines[lo] ?? '';
-    const snippet = raw.length > 160 ? raw.slice(0, 160) : raw;
-    return { line, column, snippet };
+    return lo + 1; // 1-based
+  }
+
+  columnAt(index: number): number {
+    let lo = 0;
+    let hi = this.lineStarts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if ((this.lineStarts[mid] ?? 0) <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    return index - (this.lineStarts[lo] ?? 0) + 1; // 1-based
+  }
+
+  /**
+   * Context snippet CENTERED on the match — fixes useless `bundle.js:1`
+   * evidence where the whole minified bundle is one line. Bounded.
+   */
+  snippetAt(index: number, before = 70, after = 90): string {
+    const start = Math.max(0, index - before);
+    const end = Math.min(this.code.length, index + after);
+    let s = this.code.slice(start, end).replace(/\s+/g, ' ').trim();
+    if (start > 0) s = `…${s}`;
+    if (end < this.code.length) s = `${s}…`;
+    return s;
   }
 }
 
-/** Parameter-name patterns inside JS source text (with exact evidence). */
+/**
+ * JS parameter extraction — CONTEXT-AWARE (v0.5 rewrite).
+ *
+ * The old ANCHORED_OBJ window pass caused the false-positive flood: every
+ * `query:{`/`params:{`/`body:{` in framework code opened a 400-char window
+ * that vacuumed every following object key. Removed entirely.
+ *
+ * New rules, all evidence-based:
+ *  1. Query-string keys must live INSIDE a quoted string literal — a bare
+ *     `cond?x=1:y` ternary or a property chain can never match.
+ *  2. Object keys are extracted ONLY from arguments of real request calls
+ *     (fetch / axios / XMLHttpRequest.open), scoped by balanced-paren walk
+ *     with function-value filtering — framework maps never qualify.
+ *  3. URLSearchParams var tracking requires the assignment to precede the
+ *     use within a bounded distance (minified bundles are one line; this
+ *     prevents cross-object contamination).
+ * Minified-code guard: 1-char names are artifacts and always dropped.
+ */
+const MIN_JS_NAME_LEN = 2;
+/** Call-argument spans larger than this are skipped (bounded work). */
+const MAX_CALL_SPAN = 1_200;
+/** URLSearchParams var must be used within this distance of its assignment. */
+const USP_PROXIMITY = 2_000;
+
+const STRING_LITERAL = /(['"`])([\s\S]{0,600}?)\1/g;
+const QS_IN_STRING = /[?&]([A-Za-z_][\w.\[\]-]{0,32})=([^&"'`\s]{0,48})/g;
+const USP_VAR = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*new\s+URLSearchParams/g;
+const USP_USE = (v: string) =>
+  new RegExp(`\\b${v.replace(/\$/g, '\\$')}\\.(?:get|getAll|set|append|has)\\(['"]([^'"]{1,40})['"]`, 'g');
+const REQUEST_CALL = /\b(?:fetch\s*\(|axios(?:\s*\.\s*(?:get|post|put|patch|delete|head|options|request))?\s*\(|\.open\s*\(\s*["'`][A-Za-z]+["'`]\s*,)/gi;
+
+/** Skip keys whose values are functions — action maps are not payloads. */
+const FUNCTION_VALUE = /^(?:function\b|async\b|=>|\(\s*\))/;
+
+/**
+ * Object keys inside a request-call argument span — single-pass, string/
+ * escape aware, O(span) once per call site (bounded by MAX_CALL_SPAN).
+ * `expectKey` tracking means a key qualifies only at an object-literal
+ * position (`{` or `,` before it) — property reads, ternaries and
+ * computed access can never qualify.
+ */
+function objectKeysInSpan(span: string): Array<{ name: string; index: number; colonEnd: number }> {
+  const out: Array<{ name: string; index: number; colonEnd: number }> = [];
+  let inString: string | null = null;
+  let depth = 0;
+  let expectKey = false;
+  let i = 0;
+  while (i < span.length) {
+    const ch = span[i] ?? '';
+    if (inString) {
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (ch === inString) inString = null;
+      i += 1;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      inString = ch;
+      i += 1;
+      continue;
+    }
+    if (ch === '{') {
+      depth += 1;
+      expectKey = true;
+      i += 1;
+      continue;
+    }
+    if (ch === '}') {
+      depth -= 1;
+      expectKey = false;
+      i += 1;
+      continue;
+    }
+    if (ch === ',') {
+      if (depth > 0) expectKey = true;
+      i += 1;
+      continue;
+    }
+    if (expectKey && /[A-Za-z_$"']/.test(ch)) {
+      const start = i;
+      let name = '';
+      if (ch === '"' || ch === "'") {
+        i += 1;
+        while (i < span.length && span[i] !== ch) {
+          name += span[i];
+          i += 1;
+        }
+        i += 1; // closing quote
+      } else {
+        while (i < span.length && /[$\w-]/.test(span[i] ?? '')) {
+          name += span[i];
+          i += 1;
+        }
+      }
+      // require `:` right after the key (object key, not array item/label)
+      let j = i;
+      while (j < span.length && /\s/.test(span[j] ?? '')) j += 1;
+      if ((span[j] ?? '') === ':') {
+        out.push({ name, index: start, colonEnd: j + 1 });
+        expectKey = false;
+        i = j + 1;
+        continue;
+      }
+      expectKey = false;
+      continue;
+    }
+    i += 1;
+  }
+  return out;
+}
+
 export function extractJsParams(
   code: string,
   pageUrl: string,
@@ -328,7 +441,7 @@ export function extractJsParams(
   if (code.length === 0) return out;
   const locator = new LineLocator(code);
 
-  const withEvidence = (
+  const add = (
     name: string,
     kind: ParamKind,
     confidence: ParamConfidence,
@@ -336,45 +449,92 @@ export function extractJsParams(
     extra: Partial<ParamObservation> = {},
   ): void => {
     if (name.length < MIN_JS_NAME_LEN) return; // minified artifacts stay out
-    const { line, column, snippet } = locator.locate(index);
     const o = obs(name, 'js', kind, pageUrl, {
       confidence,
-      evidence: { url: sourceUrl ?? pageUrl, line, column, snippet },
+      evidence: {
+        url: sourceUrl ?? pageUrl,
+        line: locator.lineAt(index),
+        column: locator.columnAt(index),
+        snippet: locator.snippetAt(index),
+      },
       ...extra,
     });
     if (o) out.push(o);
   };
 
-  for (const m of code.matchAll(QS_IN_STRING)) {
-    const name = m[1];
-    if (!name) continue;
-    withEvidence(name, 'js-query', 'medium', m.index ?? 0, { sample: cap(m[2] ?? '') });
-  }
-
-  for (const vm of code.matchAll(USP_VAR)) {
-    const varName = vm[1];
-    if (!varName) continue;
-    const use = USP_USE(varName);
-    for (const m of code.matchAll(use)) {
-      const name = m[1];
+  // ── 1) query-string keys INSIDE string literals ──────────────────────────
+  for (const sm of code.matchAll(STRING_LITERAL)) {
+    const quote = sm[1];
+    const content = sm[2] ?? '';
+    const contentStart = (sm.index ?? 0) + 1;
+    // template placeholders produce computed names — skip those segments
+    if (quote === '`') {
+      for (const qm of content.matchAll(QS_IN_STRING)) {
+        const name = qm[1] ?? '';
+        const localIdx = qm.index ?? 0;
+        if (content[localIdx - 1] === '$' || content[localIdx] === '$') continue;
+        add(name, 'js-query', 'medium', contentStart + localIdx, { sample: cap(qm[2] ?? '') });
+      }
+      continue;
+    }
+    for (const qm of content.matchAll(QS_IN_STRING)) {
+      const name = qm[1] ?? '';
       if (!name) continue;
-      withEvidence(name, 'js-searchparams', 'medium', m.index ?? 0);
+      add(name, 'js-query', 'medium', contentStart + (qm.index ?? 0), { sample: cap(qm[2] ?? '') });
     }
   }
 
-  for (const am of code.matchAll(ANCHORED_OBJ)) {
-    const start = (am.index ?? 0) + am[0].length;
-    const window = code.slice(start, start + 400);
-    for (const km of window.matchAll(OBJ_KEY)) {
-      const key = km[1];
-      if (!key || /^(get|set|value|type|name|length|url|href|method)$/.test(key)) continue;
-      withEvidence(key, 'js-object', 'low', start + (km.index ?? 0));
+  // ── 2) URLSearchParams var tracking with proximity guard ─────────────────
+  const uspAssignments: Array<{ name: string; index: number }> = [];
+  for (const m of code.matchAll(USP_VAR)) {
+    const varName = m[1];
+    if (varName) uspAssignments.push({ name: varName, index: m.index ?? 0 });
+  }
+  for (const { name: varName, index: assignIdx } of uspAssignments) {
+    const use = USP_USE(varName);
+    for (const m of code.matchAll(use)) {
+      const useIdx = m.index ?? 0;
+      if (useIdx < assignIdx || useIdx - assignIdx > USP_PROXIMITY) continue;
+      const paramName = m[1] ?? '';
+      if (!paramName) continue;
+      add(paramName, 'js-searchparams', 'medium', useIdx);
+    }
+  }
+
+  // ── 3) object keys ONLY from real request-call arguments ─────────────────
+  for (const cm of code.matchAll(REQUEST_CALL)) {
+    const parenStart = (cm.index ?? 0) + cm[0].lastIndexOf('(');
+    if (parenStart < 0) continue;
+    // balanced-paren walk, bounded
+    let depth = 0;
+    let end = -1;
+    const limit = Math.min(code.length, parenStart + MAX_CALL_SPAN);
+    for (let i = parenStart; i < limit; i++) {
+      const ch = code[i];
+      if (ch === '(') depth += 1;
+      else if (ch === ')') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    const span = code.slice(parenStart + 1, end);
+    if (span.includes('${')) continue; // computed template call — skip
+
+    for (const key of objectKeysInSpan(span)) {
+      if (key.name.length < MIN_JS_NAME_LEN) continue;
+      if (/^(get|set|value|type|name|length|url|href|method)$/.test(key.name)) continue;
+      const valueHead = span.slice(key.colonEnd, key.colonEnd + 24).trim();
+      if (FUNCTION_VALUE.test(valueHead)) continue; // action map, not payload
+      add(key.name, 'js-object', 'high', (cm.index ?? 0) + 1 + key.index);
     }
   }
 
   return out;
 }
-
 // ─── URL catalog extraction (PHASE 2 — comprehensive sources) ────────────────
 
 export interface UrlCatalogEntry {

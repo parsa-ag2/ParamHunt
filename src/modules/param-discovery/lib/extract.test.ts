@@ -102,12 +102,16 @@ describe('extractJsParams (text analysis — never executed)', () => {
     expect(rows.find((r) => r.name === 'user_id')?.kind).toBe('js-searchparams');
   });
 
-  it('extracts object keys in params/data contexts at low confidence', () => {
+  it('extracts object keys ONLY from real request-call arguments (v0.5 fix)', () => {
+    // inside an axios call → direct payload evidence → HIGH confidence
     const rows = extractJsParams(`axios.post(u, { params: { is_admin: false, role: "x" } })`, PAGE);
     const names = rows.map((r) => r.name);
     expect(names).toContain('is_admin');
     expect(names).toContain('role');
-    expect(rows.find((r) => r.name === 'is_admin')?.confidence).toBe('low');
+    expect(rows.find((r) => r.name === 'is_admin')?.confidence).toBe('high');
+    // the same object OUTSIDE a request call → zero params (framework noise fix)
+    const outside = extractJsParams(`var cfg = { params: { is_admin: false, role: "x" } };`, PAGE);
+    expect(outside).toEqual([]);
   });
 
   it('rejects invalid parameter names', () => {
